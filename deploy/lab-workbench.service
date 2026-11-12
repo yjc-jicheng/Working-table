@@ -1,0 +1,14 @@
+[Unit]
+Description=Lab Workbench MVP
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/lab-workbench
+EnvironmentFile=%h/lab-workbench/.env
+ExecStart=%h/.local/bin/node %h/lab-workbench/server/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
