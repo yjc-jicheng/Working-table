@@ -5,12 +5,28 @@
   const Charts = window.LabCharts;
   const Theme = window.LabTheme;
   const Branding = window.LabBranding;
+  function workspacePage(workspace) {
+    if (!S.isOnline() || !workspace) return '';
+    const page = Branding.pageFor(workspace);
+    return page && /^\/index\.html\?school=v3-[a-f0-9]{64}$/.test(page) ? page : '';
+  }
+  function goToWorkspacePage(workspace) {
+    const page = workspacePage(workspace);
+    if (!page) return false;
+    const target = new URL(page, window.location.href);
+    target.hash = window.location.hash;
+    if (target.pathname + target.search === window.location.pathname + window.location.search) return false;
+    window.location.replace(target.pathname + target.search + target.hash);
+    return true;
+  }
   function boot() {
     if (S.isOnline() && !S.isAuthenticated()) {
       document.body.classList.add('auth-mode');
       if (window.LabAuthUI) window.LabAuthUI.render();
       return;
     }
+    // A school-specific URL gives Safari a new page-icon cache key after branding changes.
+    if (goToWorkspacePage(S.workspace())) return;
 
   /* ---------- 认证适配器 ---------- */
   const AuthAdapter = {
@@ -1506,12 +1522,10 @@
       let school;
       try { school = Branding.readPicker(document.getElementById('view')); }
       catch (err) { toast(err.message, 'error'); return; }
-      const previousSchool = JSON.stringify(Branding.schoolFields(S.workspace()));
+      const previousPage = workspacePage(S.workspace());
       el.disabled = true;
       S.setWorkspace(Object.assign({ name: name }, school)).then(function (workspace) {
-        if (S.isOnline() && previousSchool !== JSON.stringify(Branding.schoolFields(workspace))) {
-          window.location.reload(); return;
-        }
+        if (S.isOnline() && workspacePage(workspace) !== previousPage && goToWorkspacePage(workspace)) return;
         toast('课题组信息已更新', 'success'); render();
       }).catch(function (err) { el.disabled = false; toast('保存失败：' + err.message, 'error'); });
       return;

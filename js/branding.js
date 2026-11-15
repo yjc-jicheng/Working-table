@@ -5,6 +5,7 @@
   const CACHE_KEY = 'lab-workbench:school-branding:v1';
   const DEFAULT_LOGO = 'favicon.svg';
   const ICON_VERSION = '?v=2';
+  const SCHOOL_PAGE_RE = /^\/index\.html\?school=v3-[a-f0-9]{64}$/;
   function assetSource(source) { return window.location.protocol === 'file:' && source.charAt(0) === '/' ? '.' + source : source; }
   function esc(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
@@ -13,17 +14,20 @@
   }
   function schoolFields(value) {
     const school = value || {}, preset = Schools.find(school.school_id);
-    if (preset) return { school_id: preset.id, school_name: preset.name, school_logo: preset.logo, school_favicon: preset.logo + ICON_VERSION, school_favicon_ico: preset.logo.replace(/\.png$/, '.ico') + ICON_VERSION };
+    const page = SCHOOL_PAGE_RE.test(String(school.school_page || '')) ? school.school_page : '';
+    if (preset) return { school_id: preset.id, school_name: preset.name, school_logo: preset.logo, school_favicon: preset.logo + ICON_VERSION, school_favicon_ico: preset.logo.replace(/\.png$/, '.ico') + ICON_VERSION, school_page: page };
     if (school.school_id === 'custom') {
       return {
         school_id: 'custom', school_name: String(school.school_name || '').slice(0, 80),
         school_logo: /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(school.school_logo || '') && school.school_logo.length <= 280000 ? school.school_logo : '',
         school_favicon: /^\/school-icons\/[a-f0-9]{64}\.(?:png|jpg|webp)\?v=2$/.test(school.school_favicon || '') ? school.school_favicon : '',
-        school_favicon_ico: /^\/school-icons\/[a-f0-9]{64}\.ico\?v=2$/.test(school.school_favicon_ico || '') ? school.school_favicon_ico : ''
+        school_favicon_ico: /^\/school-icons\/[a-f0-9]{64}\.ico\?v=2$/.test(school.school_favicon_ico || '') ? school.school_favicon_ico : '',
+        school_page: page
       };
     }
     return { school_id: '', school_name: '', school_logo: '' };
   }
+  function pageFor(value) { return schoolFields(value).school_page || ''; }
   function remembered() {
     try { return schoolFields(JSON.parse(localStorage.getItem(CACHE_KEY) || 'null')); }
     catch (_) { return schoolFields(null); }
@@ -152,7 +156,7 @@
       } finally { if (token === revision) { picker.dataset.busy = 'false'; fileInput.value = ''; } }
     });
   }
-  window.LabBranding = { apply: apply, remembered: remembered, schoolFields: schoolFields, pickerHTML: pickerHTML, mount: mount, readPicker: readPicker };
+  window.LabBranding = { apply: apply, remembered: remembered, schoolFields: schoolFields, pageFor: pageFor, pickerHTML: pickerHTML, mount: mount, readPicker: readPicker };
   // Keep server-rendered icons authoritative while the authenticated workspace loads.
   apply(remembered(), false, false);
 })();

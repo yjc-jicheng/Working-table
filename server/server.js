@@ -151,10 +151,15 @@ function schoolIcons(workspace) {
     ico: image.type === 'image/png' && pngIco(image.data) ? base + '.ico?v=2' : '', type: image.type
   };
 }
+function schoolPage(workspace) {
+  const icons = schoolIcons(workspace);
+  const revision = crypto.createHmac('sha256', schoolIconKey).update('school-page-v3\0').update(icons.raster).update('\0').update(icons.ico).digest('hex');
+  return '/index.html?school=v3-' + revision;
+}
 function publicWorkspace(workspace) {
   if (!workspace) return null;
   const icons = schoolIcons(workspace);
-  return Object.assign({}, workspace, { school_favicon: icons.raster, school_favicon_ico: icons.ico });
+  return Object.assign({}, workspace, { school_favicon: icons.raster, school_favicon_ico: icons.ico, school_page: schoolPage(workspace) });
 }
 function schoolSettings(body, current = {}) {
   if (!['school_id', 'school_name', 'school_logo'].some(key => Object.prototype.hasOwnProperty.call(body, key))) return { fields: null };
@@ -799,7 +804,8 @@ function schoolIcon(req, res, pathname) {
   return match[2] === extension ? sendImage(req, res, image) : error(res, 404, '文件不存在', 'not_found');
 }
 async function indexHtml(req, res) {
-  const icons = schoolIcons(workspaceForUser(userFromRequest(req)));
+  const demo = new URL(req.url, 'http://localhost').searchParams.get('demo') === '1';
+  const icons = schoolIcons(demo ? null : workspaceForUser(userFromRequest(req)));
   const links = [
     `<link id="app-favicon" rel="icon" href="${icons.raster}" type="${icons.type}">`,
     icons.ico ? `<link id="app-favicon-ico" rel="icon" href="${icons.ico}" type="image/x-icon">` : '',
@@ -847,9 +853,14 @@ async function main() {
         return await api(req, res, url.pathname, req.method, body, userFromRequest(req));
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return error(res, 405, '不支持的请求方法', 'method_not_allowed');
-      if (url.pathname === '/') {
-        res.writeHead(302, { Location: '/index.html' + url.search, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
-        return res.end();
+      if (url.pathname === '/' || url.pathname === '/index.html') {
+        const demo = url.searchParams.get('demo') === '1';
+        const expected = new URL(schoolPage(workspaceForUser(userFromRequest(req))), 'http://localhost').searchParams.get('school');
+        if (url.pathname === '/' || (!demo && (url.searchParams.getAll('school').length !== 1 || url.searchParams.get('school') !== expected))) {
+          if (!demo) url.searchParams.set('school', expected);
+          res.writeHead(302, { Location: '/index.html' + url.search, 'Cache-Control': 'private, no-store', Vary: 'Cookie', 'X-Content-Type-Options': 'nosniff' });
+          return res.end();
+        }
       }
       if (url.pathname === '/favicon.ico') return await favicon(req, res, true);
       if (['/favicon.png', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'].includes(url.pathname)) return await favicon(req, res, false);
