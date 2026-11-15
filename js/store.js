@@ -9,9 +9,16 @@ window.LabStore = (function () {
   const COLLECTIONS = ['members', 'projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'logs', 'daily_logs', 'weekly_reports', 'reviews'];
   let state = null;
   let readyPromise = null;
+  const errorListeners = [];
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function emptyData() { return { members: [], projects: [], tasks: [], papers: [], events: [], analyses: [], experiments: [], logs: [], daily_logs: [], weekly_reports: [], reviews: [] }; }
+  /* 乐观写入失败时回滚本地状态，并通知界面给出提示。 */
+  function onError(fn) { errorListeners.push(fn); }
+  function reportError(err, context) {
+    console.warn(err);
+    errorListeners.forEach(function (fn) { try { fn(err, context || {}); } catch (_) { /* 监听器自身出错不影响数据层 */ } });
+  }
   function newId(collection) { return collection.slice(0, 2) + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
   function freshDemo() {
     return {
@@ -27,8 +34,10 @@ window.LabStore = (function () {
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) { /* Private browsing can remain memory-only. */ }
   }
   function setData(data) {
-    state.data = Object.assign(emptyData(), data || {});
-    if (!Array.isArray(state.data.daily_logs)) state.data.daily_logs = Array.isArray(state.data.logs) ? state.data.logs : [];
+    const source = data || {};
+    state.data = Object.assign(emptyData(), source);
+    // emptyData() 自带空的 daily_logs，必须看传入数据本身，否则只带 logs 的演示数据会被清空。
+    if (!Array.isArray(source.daily_logs)) state.data.daily_logs = Array.isArray(source.logs) ? source.logs : [];
     state.data.logs = state.data.daily_logs;
     for (const c of COLLECTIONS) if (!Array.isArray(state.data[c])) state.data[c] = [];
     state.data.logs = state.data.daily_logs;
@@ -106,7 +115,11 @@ window.LabStore = (function () {
       const remote = out.item;
       const index = state.data[localCollection].findIndex(x => x.id === row.id);
       if (index >= 0 && remote) state.data[localCollection][index] = remote;
-    }).catch(function (err) { state.data[localCollection] = state.data[localCollection].filter(x => x.id !== row.id); console.warn(err); });
+    }).catch(function (err) {
+      const index = state.data[localCollection].findIndex(x => x.id === row.id);
+      if (index >= 0) state.data[localCollection].splice(index, 1);
+      reportError(err, { op: 'create', collection: localCollection });
+    });
     return row;
   }
   async function createAsync(collection, item) {
@@ -120,9 +133,14 @@ window.LabStore = (function () {
     const localCollection = collection === 'daily_logs' ? 'logs' : collection;
     const row = find(localCollection, id);
     if (!row) return null;
+    const previous = {};
+    Object.keys(patch).forEach(function (key) { previous[key] = row[key]; });
     Object.assign(row, patch);
     if (!ONLINE) { saveDemo(); return row; }
-    request('/api/' + collectionName(collection) + '/' + encodeURIComponent(id), { method: 'PATCH', body: patch }).then(function (out) { if (out.item) Object.assign(row, out.item); }).catch(function (err) { console.warn(err); });
+    request('/api/' + collectionName(collection) + '/' + encodeURIComponent(id), { method: 'PATCH', body: patch }).then(function (out) { if (out.item) Object.assign(row, out.item); }).catch(function (err) {
+      Object.keys(previous).forEach(function (key) { if (previous[key] === undefined) delete row[key]; else row[key] = previous[key]; });
+      reportError(err, { op: 'update', collection: localCollection });
+    });
     return row;
   }
   async function updateAsync(collection, id, patch) {
@@ -131,24 +149,29 @@ window.LabStore = (function () {
     if (!row) return null;
     if (!ONLINE) return update(collection, id, patch);
     const out = await request('/api/' + collectionName(collection) + '/' + encodeURIComponent(id), { method: 'PATCH', body: patch });
-    if (out.item) Object.assign(row, out.item);
+    if (out.item || out.member) Object.assign(row, out.item || out.member);
     return row;
   }
   function remove(collection, id) {
     const localCollection = collection === 'daily_logs' ? 'logs' : collection;
-    const before = state.data[localCollection].length;
-    state.data[localCollection] = state.data[localCollection].filter(x => x.id !== id);
-    if (!ONLINE) { saveDemo(); return state.data[localCollection].length < before; }
-    request('/api/' + collectionName(collection) + '/' + encodeURIComponent(id), { method: 'DELETE' }).catch(function (err) { console.warn(err); });
-    return state.data[localCollection].length < before;
+    const rows = state.data[localCollection];
+    const index = rows.findIndex(x => x.id === id);
+    if (index < 0) return false;
+    const removed = rows.splice(index, 1)[0];
+    if (!ONLINE) { saveDemo(); return true; }
+    request('/api/' + collectionName(collection) + '/' + encodeURIComponent(id), { method: 'DELETE' }).catch(function (err) {
+      rows.splice(Math.min(index, rows.length), 0, removed);
+      reportError(err, { op: 'remove', collection: localCollection });
+    });
+    return true;
   }
   async function removeAsync(collection, id) {
     const localCollection = collection === 'daily_logs' ? 'logs' : collection;
     if (!ONLINE) return remove(collection, id);
     await request('/api/' + collectionName(collection) + '/' + encodeURIComponent(id), { method: 'DELETE' });
-    const before = state.data[localCollection].length;
-    state.data[localCollection] = state.data[localCollection].filter(x => x.id !== id);
-    return state.data[localCollection].length < before;
+    const index = state.data[localCollection].findIndex(x => x.id === id);
+    if (index >= 0) state.data[localCollection].splice(index, 1);
+    return index >= 0;
   }
   function aiMode() { return state.aiMode; }
   function setAiMode(mode) { state.aiMode = ONLINE ? 'http' : mode; if (!ONLINE) saveDemo(); }
@@ -160,6 +183,27 @@ window.LabStore = (function () {
     return request('/api/settings/ai', { method: 'PATCH', body: safe }).then(function (out) { if (out.ai) Object.assign(state.aiConfig, out.ai); return state.aiConfig; });
   }
   function save() { if (!ONLINE) saveDemo(); }
+  async function setWorkspaceName(name) {
+    if (!ONLINE) { state.workspace = Object.assign({}, state.workspace, { name: name }); saveDemo(); return state.workspace; }
+    const out = await request('/api/workspace', { method: 'PATCH', body: { name: name } });
+    if (out.workspace) state.workspace = out.workspace;
+    return state.workspace;
+  }
+  /* 备份：导出当前账号可见的全部业务数据；导入仅演示模式可用。 */
+  function exportData() {
+    const data = clone(state.data); delete data.logs;
+    return { app: 'lab-workbench', version: 1, exported_at: new Date().toISOString(), workspace: state.workspace ? { name: state.workspace.name } : null, data: data };
+  }
+  function importData(payload) {
+    if (ONLINE) throw new Error('联网工作台的数据由服务器管理，不支持在浏览器中导入');
+    const data = payload && payload.data;
+    if (!data || !Array.isArray(data.members) || !data.members.length) throw new Error('备份文件格式不正确');
+    setData(clone(data));
+    if (payload.workspace && payload.workspace.name) state.workspace = { name: String(payload.workspace.name) };
+    if (!currentUser()) state.currentUserId = state.data.members[0].id;
+    saveDemo();
+    return state;
+  }
   function reset() { if (!ONLINE) { state = freshDemo(); setData(state.data); saveDemo(); } }
   async function signIn(credentials) { if (!ONLINE) return state; await request('/api/auth/login', { method: 'POST', body: credentials }); return init(true); }
   async function register(credentials) { if (!ONLINE) return state; await request('/api/auth/register', { method: 'POST', body: credentials }); return init(true); }
@@ -202,6 +246,6 @@ window.LabStore = (function () {
     init, data, getState, adapter, isOnline, isAuthenticated, workspace, can, members, member, currentUser, switchUser,
     list, find, create, update, updateAsync, remove, removeAsync, aiMode, setAiMode, aiConfig, setAiConfig, reset, save,
     signIn, register, signOut, applyDailySummary, weeklySummary, createAsync, refresh, uploadAttachment, downloadAttachment, removeAttachment, saveNotificationSubscription, notificationPreferences, setNotificationPreferences,
-    request
+    request, onError, setWorkspaceName, exportData, importData
   };
 })();

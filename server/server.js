@@ -274,8 +274,10 @@ function canWriteRow(user, collection, row) {
   if (collection === 'projects') return !row || row.lead_id === user.id || row.created_by === user.id;
   return !row || row.created_by === user.id;
 }
-function cleanItem(collection, body, user) {
+// partial=true 用于 PATCH：只规范化请求里实际带上的字段，避免把未提交的字段重置为默认值。
+function cleanItem(collection, body, user, partial) {
   const out = {};
+  const given = key => !partial || out[key] !== undefined;
   const allowed = {
     projects: ['title', 'kind', 'goal', 'start_date', 'deadline', 'progress', 'lead_id', 'milestones', 'notes'],
     tasks: ['title', 'project_id', 'assignee_id', 'priority', 'status', 'due_date', 'tags', 'completed_at'],
@@ -292,15 +294,22 @@ function cleanItem(collection, body, user) {
     const limits = { title: 200, date: 10, project_id: 100, task_id: 100, category: 80, hypothesis: 10000, materials: 10000, procedure: 20000, observations: 20000, results: 20000, conclusion: 10000, next_steps: 10000 };
     for (const key of allowed) if (out[key] !== undefined) out[key] = safeText(out[key], limits[key] || 10000);
   }
-  if (collection === 'projects') out.progress = Math.max(0, Math.min(100, Number(out.progress || 0)));
+  if (collection === 'projects') {
+    if (given('progress')) out.progress = Math.max(0, Math.min(100, Number(out.progress || 0)));
+    if (out.milestones !== undefined) {
+      out.milestones = (Array.isArray(out.milestones) ? out.milestones : []).slice(0, 100)
+        .map(m => ({ title: safeText(m && m.title, 200), due: safeText(m && m.due, 10), done: bool(m && m.done) }))
+        .filter(m => m.title);
+    }
+  }
   if (collection === 'tasks') {
-    out.status = ['todo', 'doing', 'done', 'delayed'].includes(out.status) ? out.status : 'todo';
-    out.priority = ['高', '中', '低'].includes(out.priority) ? out.priority : '中';
+    if (given('status')) out.status = ['todo', 'doing', 'done', 'delayed'].includes(out.status) ? out.status : 'todo';
+    if (given('priority')) out.priority = ['高', '中', '低'].includes(out.priority) ? out.priority : '中';
   }
   if (collection === 'daily_logs') {
-    out.author_id = user.id;
-    out.hours = Math.max(0, Math.min(24, Number(out.hours || 0)));
-    out.content = safeText(out.content, 20000);
+    if (!partial) out.author_id = user.id;
+    if (given('hours')) out.hours = Math.max(0, Math.min(24, Number(out.hours || 0)));
+    if (given('content')) out.content = safeText(out.content, 20000);
   }
   return out;
 }
@@ -639,7 +648,7 @@ async function api(req, res, pathname, method, body, user) {
     const item = db[collection].find(row => row.id === parts[2] && row.workspace_id === activeWorkspace(user).id);
     if (!item) return error(res, 404, '记录不存在', 'not_found');
     if (!canWriteRow(user, collection, item)) return error(res, 403, '没有修改权限', 'forbidden');
-    const patch = cleanItem(collection, body, user);
+    const patch = cleanItem(collection, body, user, true);
     if (collection === 'experiments') {
       const candidate = Object.assign({}, item, patch);
       if (!candidate.title) return error(res, 400, '请填写实验记录名称', 'invalid_experiment');

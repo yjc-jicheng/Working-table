@@ -86,7 +86,8 @@ window.LabAI = (function () {
       }
       const out = await res.json();
       if (!out || typeof out.summary !== 'string') throw new Error('汇总结果格式不正确');
-      out.source = 'http';
+      // 服务端会标明 ai（模型生成）或 fallback（规则降级），界面据此提示来源
+      if (!out.source) out.source = 'http';
       return out;
     });
   }

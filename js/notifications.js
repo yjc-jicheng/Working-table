@@ -31,7 +31,19 @@
     notify('课题组工作台通知已开启', '每天晚上提醒日报，早上提醒任务；延期任务会在工作台打开时提示。', 'lab-enabled');
     return true;
   }
-  function todayKey() { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  /* 与日报的 date 字段同为 YYYY-MM-DD，否则无法判断「今天是否已上报」。 */
+  function todayKey() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function status() {
+    if (!('Notification' in window)) return 'unsupported';
+    if (Notification.permission === 'denied') return 'denied';
+    return Notification.permission === 'granted' && prefs().enabled ? 'enabled' : 'off';
+  }
+  function setPref(key, value) {
+    const next = prefs(); next[key] = Boolean(value); savePrefs(next);
+    if (key !== 'enabled' && window.LabStore && window.LabStore.isOnline()) { const patch = {}; patch[key] = next[key]; window.LabStore.setNotificationPreferences(patch).catch(function () {}); }
+    return next;
+  }
+  function disable() { return setPref('enabled', false); }
   function check() {
     if (!window.LabStore || !window.LabStore.isAuthenticated()) return;
     const p = prefs(); if (!p.enabled || !('Notification' in window) || Notification.permission !== 'granted') return;
@@ -49,7 +61,7 @@
       if (overdue.length) notify('有延期任务需要推进', overdue.slice(0, 3).map(function (t) { return t.title; }).join('；'), 'overdue-tasks-' + key);
     }
   }
-  window.LabNotifications = { enable: enable, check: check, prefs: prefs, savePrefs: savePrefs, notify: notify };
+  window.LabNotifications = { enable: enable, disable: disable, status: status, setPref: setPref, check: check, prefs: prefs, savePrefs: savePrefs, notify: notify };
   if ('serviceWorker' in navigator && window.location.protocol !== 'file:') navigator.serviceWorker.register('/sw.js').then(function (reg) { registration = reg; }).catch(function () {});
   setInterval(check, 60000);
 })();
