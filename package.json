@@ -1,6 +1,6 @@
 {
   "name": "lab-workbench-mvp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "联网课题组工作台 MVP",
   "scripts": {

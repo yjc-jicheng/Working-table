@@ -103,6 +103,42 @@ function branding(value) {
   return { name: value.name, timezone: value.timezone, school_id: value.school_id, school_name: value.school_name, school_logo: value.school_logo };
 }
 
+function faviconLinks(response) {
+  const html = response.bytes.toString('utf8');
+  const links = {};
+  for (const tag of html.match(/<link\b[^>]*>/gi) || []) {
+    const id = (tag.match(/\bid="([^"]+)"/) || [])[1];
+    if (id && /^app-(?:favicon(?:-ico)?|apple-icon)$/.test(id)) {
+      assert(!links[id], 'Duplicate icon link: ' + id);
+      links[id] = { href: (tag.match(/\bhref="([^"]+)"/) || [])[1], type: (tag.match(/\btype="([^"]+)"/) || [])[1] };
+      assert(html.indexOf(tag) < html.indexOf('<script'), 'Icon URL must exist in initial HTML before scripts');
+    }
+  }
+  return links;
+}
+
+function assertIco(response) {
+  assert.equal(response.headers.get('content-type'), 'image/x-icon');
+  assert(response.bytes.length > 22, 'ICO must include image payload');
+  assert.equal(response.bytes.readUInt16LE(0), 0);
+  assert.equal(response.bytes.readUInt16LE(2), 1);
+  const count = response.bytes.readUInt16LE(4);
+  assert(count > 0);
+  for (let index = 0; index < count; index++) {
+    const entry = 6 + index * 16;
+    assert(entry + 16 <= response.bytes.length);
+    const size = response.bytes.readUInt32LE(entry + 8), offset = response.bytes.readUInt32LE(entry + 12);
+    assert(size && offset >= 6 + count * 16 && offset + size <= response.bytes.length, 'ICO directory must point to a complete image');
+  }
+}
+
+function icoPng(response) {
+  assertIco(response);
+  assert.equal(response.bytes.readUInt16LE(4), 1);
+  const size = response.bytes.readUInt32LE(14), offset = response.bytes.readUInt32LE(18);
+  return response.bytes.subarray(offset, offset + size);
+}
+
 async function main() {
   assert(schools.list.length >= 2, 'At least two school presets are needed for isolation checks');
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lab-school-branding-'));
@@ -118,7 +154,7 @@ async function main() {
   await start();
 
   const first = schools.list[0], second = schools.list[1];
-  let piCookie, memberCookie, otherCookie, originalWorkspaceId, otherWorkspace, taskId;
+  let piCookie, memberCookie, otherCookie, originalWorkspaceId, otherWorkspace, taskId, stableCustomUrl;
 
   await check('registration canonicalizes presets and rejects unknown schools without reserving the account', async () => {
     status(await register('pi-one@example.test', 'create', { workspace_name: '校徽测试课题组甲', school_id: 'unknown-university' }), 400);
@@ -131,6 +167,34 @@ async function main() {
     assert.equal(registered.data.user.role, 'pi');
     assert.equal(registered.data.workspace.school_name, first.name);
     assert.equal(registered.data.workspace.school_logo, first.logo);
+    assert.equal(registered.data.workspace.school_favicon, first.logo + '?v=2');
+    assert.equal(registered.data.workspace.school_favicon_ico, first.logo.replace(/\.png$/, '.ico') + '?v=2');
+  });
+
+  await check('initial HTML contains selected raster and true ICO URLs before JavaScript without exposing group metadata', async () => {
+    const own = await workspace(piCookie);
+    for (const route of ['/', '/index.html']) {
+      const response = status(await request(route, { cookie: piCookie }), 200);
+      assert.equal(response.headers.get('cache-control'), 'private, no-store');
+      assert.equal(response.headers.get('vary'), 'Cookie');
+      const links = faviconLinks(response);
+      assert.equal(links['app-favicon'].href, first.logo + '?v=2');
+      assert.equal(links['app-favicon'].type, 'image/png');
+      assert.equal(links['app-favicon-ico'].href, first.logo.replace(/\.png$/, '.ico') + '?v=2');
+      assert.equal(links['app-apple-icon'].href, first.logo + '?v=2');
+      assertIco(status(await request(links['app-favicon-ico'].href), 200));
+      assert.equal(status(await request(links['app-favicon'].href), 200).headers.get('content-type'), 'image/png');
+      const text = response.bytes.toString('utf8');
+      for (const sensitive of [own.id, own.name, own.join_code]) assert(!text.includes(sensitive));
+      const anonymous = status(await request(route), 200);
+      const anonymousLinks = faviconLinks(anonymous);
+      assert.equal(anonymousLinks['app-favicon'].href, '/favicon.png?v=2');
+      assert.equal(anonymousLinks['app-favicon-ico'].href, '/favicon.ico?v=2');
+      assert(!anonymous.bytes.toString('utf8').includes(first.logo));
+    }
+    const head = status(await request('/', { method: 'HEAD', cookie: piCookie }), 200);
+    assert.equal(head.bytes.length, 0);
+    assert(Number(head.headers.get('content-length')) > 0);
   });
 
   await check('joining inherits the group brand and cannot request PI privileges', async () => {
@@ -194,38 +258,108 @@ async function main() {
     assert.equal(cleared.school_id, ''); assert.equal(cleared.school_name, ''); assert.equal(cleared.school_logo, '');
     const withoutLogo = status(await request('/api/workspace', { method: 'PATCH', cookie: piCookie, body: { school_id: 'custom', school_name: '暂未上传校徽大学' } }), 200).data.workspace;
     assert.equal(withoutLogo.school_logo, '');
-    assert.equal(status(await request('/favicon.ico', { cookie: piCookie }), 200).headers.get('content-type'), 'image/svg+xml');
+    assertIco(status(await request('/favicon.ico', { cookie: piCookie }), 200));
     status(await request('/api/workspace', { method: 'PATCH', cookie: piCookie, body: { school_id: 'custom', school_name: '自定义测试大学', school_logo: customLogo } }), 200);
   });
 
   await check('favicon serves the logged-in group privately, supports HEAD, and exposes no anonymous brand', async () => {
     status(await request('/api/workspace'), 401);
-    const neutral = status(await request('/favicon.svg'), 200);
     const anonymous = status(await request('/favicon.ico'), 200);
-    assert.deepEqual(anonymous.bytes, neutral.bytes);
+    assertIco(anonymous);
+    assert.deepEqual(anonymous.bytes, await fs.readFile(path.join(appRoot, 'favicon.ico')));
     const own = status(await request('/favicon.ico', { cookie: piCookie }), 200);
-    assert.equal(own.headers.get('content-type'), 'image/png');
-    assert.deepEqual(own.bytes, png);
+    assert.deepEqual(icoPng(own), png);
     assert.equal(own.headers.get('cache-control'), 'private, no-store');
     assert.equal(own.headers.get('vary'), 'Cookie');
     assert.equal(own.headers.get('x-content-type-options'), 'nosniff');
     const head = status(await request('/favicon.ico', { method: 'HEAD', cookie: piCookie }), 200);
     assert.equal(head.bytes.length, 0);
-    assert.equal(Number(head.headers.get('content-length')), png.length);
+    assert.equal(Number(head.headers.get('content-length')), own.bytes.length);
     const other = status(await request('/favicon.ico', { cookie: otherCookie }), 200);
-    assert.deepEqual(other.bytes, status(await request(second.logo), 200).bytes);
-    assert.deepEqual(status(await request('/favicon.ico', { cookie: 'lab_session=invalid' }), 200).bytes, neutral.bytes);
+    assertIco(other);
+    assert.deepEqual(other.bytes, status(await request(second.logo.replace(/\.png$/, '.ico')), 200).bytes);
+    assert.deepEqual(status(await request('/favicon.ico', { cookie: 'lab_session=invalid' }), 200).bytes, anonymous.bytes);
+    const neutralPng = status(await request('/favicon.png'), 200);
+    assert.equal(neutralPng.headers.get('content-type'), 'image/png');
+    assert.deepEqual(neutralPng.bytes, await fs.readFile(path.join(appRoot, 'favicon.png')));
+    for (const route of ['/favicon.png', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']) {
+      assert.deepEqual(status(await request(route, { cookie: piCookie }), 200).bytes, png);
+    }
   });
 
-  await check('every bundled school logo has a PNG response and unknown/private paths remain inaccessible', async () => {
+  await check('custom icon capabilities work without cookies, keep metadata private, and reject outdated or forged URLs', async () => {
+    const own = await workspace(piCookie);
+    stableCustomUrl = own.school_favicon;
+    assert.match(stableCustomUrl, /^\/school-icons\/[a-f0-9]{64}\.png\?v=2$/);
+    assert.match(own.school_favicon_ico, /^\/school-icons\/[a-f0-9]{64}\.ico\?v=2$/);
+    assert(!stableCustomUrl.includes(own.id));
+    const image = status(await request(stableCustomUrl), 200);
+    assert.deepEqual(image.bytes, png);
+    assert.equal(image.headers.get('content-type'), 'image/png');
+    assert.deepEqual(status(await request(stableCustomUrl, { cookie: otherCookie }), 200).bytes, png);
+    assert.deepEqual(icoPng(status(await request(own.school_favicon_ico), 200)), png);
+    const head = status(await request(stableCustomUrl, { method: 'HEAD' }), 200);
+    assert.equal(head.bytes.length, 0);
+    assert.equal(Number(head.headers.get('content-length')), png.length);
+    const links = faviconLinks(status(await request('/', { cookie: piCookie }), 200));
+    assert.equal(links['app-favicon'].href, stableCustomUrl);
+    assert.equal(links['app-favicon-ico'].href, own.school_favicon_ico);
+    assert(!status(await request('/'), 200).bytes.toString('utf8').includes(stableCustomUrl));
+    for (const route of [stableCustomUrl.replace('.png', '.jpg'), '/school-icons/' + '0'.repeat(64) + '.png', '/school-icons/' + own.id + '.png']) status(await request(route), 404);
+    const endpoints = ['/api/auth/me', '/api/bootstrap', '/api/workspace'];
+    for (const endpoint of endpoints) assert.equal(status(await request(endpoint, { cookie: piCookie }), 200).data.workspace.school_favicon, stableCustomUrl);
+    const login = status(await request('/api/auth/login', { method: 'POST', body: { email: 'pi-one@example.test', password: 'Isolated-test-password-123' } }), 200);
+    assert.equal(login.data.workspace.school_favicon, stableCustomUrl);
+    assert.equal(status(await request('/api/workspace/join-code/rotate', { method: 'POST', cookie: piCookie, body: {} }), 200).data.workspace.school_favicon, stableCustomUrl);
+    assert.equal((await workspace(otherCookie)).school_favicon, second.logo + '?v=2');
+
+    const keyPath = path.join(appRoot, 'server/data/school-icon-key');
+    const beforeKey = await fs.readFile(keyPath);
+    assert.equal(beforeKey.length, 32);
+    assert.equal((await fs.stat(keyPath)).mode & 0o777, 0o600);
+    await stop(); await start();
+    assert.equal((await workspace(piCookie)).school_favicon, stableCustomUrl);
+    assert.deepEqual(await fs.readFile(keyPath), beforeKey);
+    assert.deepEqual(status(await request(stableCustomUrl), 200).bytes, png);
+
+    const changedPng = await fs.readFile(path.join(appRoot, first.logo));
+    const changed = status(await request('/api/workspace', { method: 'PATCH', cookie: piCookie, body: { school_logo: 'data:image/png;base64,' + changedPng.toString('base64') } }), 200).data.workspace;
+    assert.notEqual(changed.school_favicon, stableCustomUrl);
+    status(await request(stableCustomUrl), 404);
+    assert.deepEqual(status(await request(changed.school_favicon), 200).bytes, changedPng);
+    stableCustomUrl = changed.school_favicon;
+    const disk = JSON.parse(await fs.readFile(path.join(appRoot, 'server/data/lab-workbench.json'), 'utf8'));
+    assert(disk.workspaces.every(current => !Object.hasOwn(current, 'school_favicon') && !Object.hasOwn(current, 'school_favicon_ico')));
+  });
+
+  await check('non-PNG custom icons keep their true MIME and do not produce a fake ICO link', async () => {
+    const webp = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
+    const updated = status(await request('/api/workspace', { method: 'PATCH', cookie: piCookie, body: { school_logo: 'data:image/webp;base64,' + webp.toString('base64') } }), 200).data.workspace;
+    assert.match(updated.school_favicon, /^\/school-icons\/[a-f0-9]{64}\.webp\?v=2$/);
+    assert.equal(updated.school_favicon_ico, '');
+    const image = status(await request(updated.school_favicon), 200);
+    assert.equal(image.headers.get('content-type'), 'image/webp');
+    assert.deepEqual(image.bytes, webp);
+    const links = faviconLinks(status(await request('/', { cookie: piCookie }), 200));
+    assert.equal(links['app-favicon'].href, updated.school_favicon);
+    assert.equal(links['app-favicon'].type, 'image/webp');
+    assert.equal(links['app-favicon-ico'], undefined);
+    status(await request(updated.school_favicon.replace('.webp', '.ico')), 404);
+    assert.deepEqual(status(await request('/favicon.ico', { cookie: piCookie }), 200).bytes, status(await request('/favicon.ico'), 200).bytes);
+    assertIco(status(await request('/favicon.ico', { cookie: piCookie }), 200));
+    status(await request(stableCustomUrl), 404);
+  });
+
+  await check('every bundled school logo has real PNG and ICO responses and unknown/private paths remain inaccessible', async () => {
     for (const school of schools.list) {
       const image = status(await request(school.logo), 200);
       assert.equal(image.headers.get('content-type'), 'image/png', school.id);
       assert.deepEqual(image.bytes.subarray(0, 8), png.subarray(0, 8), school.id);
+      assertIco(status(await request(school.logo.replace(/\.png$/, '.ico')), 200));
     }
     for (const route of [
-      '/.env', '/server/server.js', '/server/data/lab-workbench.json', '/assets/schools/',
-      '/assets/schools/nonexistent.png', '/assets/schools/SOURCES.md',
+      '/.env', '/server/server.js', '/server/data/lab-workbench.json', '/server/data/school-icon-key', '/assets/schools/',
+      '/assets/schools/nonexistent.png', '/assets/schools/nonexistent.ico', '/assets/schools/SOURCES.md',
       '/assets/schools/%2e%2e%2f%2e%2e%2fserver/server.js', '/%2eenv', '/.git/config'
     ]) status(await request(route), 404);
   });
@@ -262,7 +396,7 @@ async function main() {
     assert.equal(persisted.school_logo, first.logo);
     assert.equal((await workspace(memberCookie)).school_id, first.id);
     assert(status(await request('/api/tasks', { cookie: piCookie }), 200).data.items.some(task => task.id === taskId));
-    assert.deepEqual(status(await request('/favicon.ico', { cookie: piCookie }), 200).bytes, status(await request(first.logo), 200).bytes);
+    assert.deepEqual(status(await request('/favicon.ico', { cookie: piCookie }), 200).bytes, status(await request(first.logo.replace(/\.png$/, '.ico')), 200).bytes);
   });
 }
 

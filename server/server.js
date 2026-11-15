@@ -18,6 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'lab-workbench.json');
 const ATTACHMENT_DIR = path.join(DATA_DIR, 'attachments');
+const SCHOOL_ICON_KEY_FILE = path.join(DATA_DIR, 'school-icon-key');
 const PORT = Number(process.env.PORT || 9013);
 const HOST = process.env.HOST || '0.0.0.0';
 const SESSION_DAYS = Number(process.env.SESSION_DAYS || 30);
@@ -25,6 +26,7 @@ const MAX_BODY = 1024 * 1024 * 2;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_SCHOOL_LOGO_BYTES = 200 * 1024;
 const SCHOOL_LOGO_PATHS = new Set(schools.list.map(school => school.logo).filter(logo => /^\/assets\/schools\/[a-z0-9_-]+\.png$/.test(logo)));
+const SCHOOL_ICO_PATHS = new Set([...SCHOOL_LOGO_PATHS].map(logo => logo.replace(/\.png$/, '.ico')));
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const ENV_AI_BASE_URL = String(process.env.AI_BASE_URL || '').replace(/\/$/, '');
 const ENV_AI_API_KEY = String(process.env.AI_API_KEY || '');
@@ -48,6 +50,7 @@ const ATTACHMENT_TYPES = {
 
 let db = null;
 let writeChain = Promise.resolve();
+let schoolIconKey = null;
 
 function now() { return new Date().toISOString(); }
 function id(prefix) { return prefix + '_' + crypto.randomBytes(9).toString('hex'); }
@@ -109,6 +112,49 @@ function decodeSchoolLogo(value) {
     match[1] === 'jpeg' ? data.subarray(0, 3).equals(Buffer.from([255, 216, 255])) :
       data.length >= 12 && data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP';
   return valid ? { data, type: 'image/' + match[1] } : null;
+}
+function pngIco(data) {
+  if (data.length < 33 || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+      data.readUInt32BE(8) !== 13 || data.toString('ascii', 12, 16) !== 'IHDR') return null;
+  const width = data.readUInt32BE(16), height = data.readUInt32BE(20);
+  if (!width || !height || width > 256 || height > 256) return null;
+  const header = Buffer.alloc(22);
+  header.writeUInt16LE(1, 2); header.writeUInt16LE(1, 4);
+  header[6] = width === 256 ? 0 : width; header[7] = height === 256 ? 0 : height;
+  header.writeUInt16LE(1, 10); header.writeUInt16LE(32, 12);
+  header.writeUInt32LE(data.length, 14); header.writeUInt32LE(22, 18);
+  return Buffer.concat([header, data]);
+}
+async function ensureSchoolIconKey() {
+  try {
+    const handle = await fsp.open(SCHOOL_ICON_KEY_FILE, 'wx', 0o600);
+    try { await handle.writeFile(crypto.randomBytes(32)); } finally { await handle.close(); }
+  } catch (err) { if (err.code !== 'EEXIST') throw err; }
+  schoolIconKey = await fsp.readFile(SCHOOL_ICON_KEY_FILE);
+  if (schoolIconKey.length !== 32) throw new Error('校徽访问密钥文件格式不正确');
+  await fsp.chmod(SCHOOL_ICON_KEY_FILE, 0o600);
+}
+function schoolIconToken(workspace) {
+  return crypto.createHmac('sha256', schoolIconKey).update('school-icon-v2\0').update(String(workspace.id)).update('\0').update(workspace.school_logo).digest('hex');
+}
+function schoolIcons(workspace) {
+  const fallback = { raster: '/favicon.png?v=2', ico: '/favicon.ico?v=2', type: 'image/png' };
+  if (!workspace) return fallback;
+  const school = schools.find(workspace.school_id);
+  if (school && SCHOOL_LOGO_PATHS.has(school.logo)) return { raster: school.logo + '?v=2', ico: school.logo.replace(/\.png$/, '.ico') + '?v=2', type: 'image/png' };
+  if (workspace.school_id !== 'custom') return fallback;
+  const image = decodeSchoolLogo(workspace.school_logo);
+  if (!image) return fallback;
+  const base = '/school-icons/' + schoolIconToken(workspace);
+  return {
+    raster: base + '.' + (image.type === 'image/jpeg' ? 'jpg' : image.type.slice(6)) + '?v=2',
+    ico: image.type === 'image/png' && pngIco(image.data) ? base + '.ico?v=2' : '', type: image.type
+  };
+}
+function publicWorkspace(workspace) {
+  if (!workspace) return null;
+  const icons = schoolIcons(workspace);
+  return Object.assign({}, workspace, { school_favicon: icons.raster, school_favicon_ico: icons.ico });
 }
 function schoolSettings(body, current = {}) {
   if (!['school_id', 'school_name', 'school_logo'].some(key => Object.prototype.hasOwnProperty.call(body, key))) return { fields: null };
@@ -499,14 +545,14 @@ async function api(req, res, pathname, method, body, user) {
     if (createGroup) workspace.owner_id = newUser.id;
     db.users.push(newUser); addAudit(newUser, 'register', 'user', newUser.id, { workspace_mode: createGroup ? 'create' : 'join', workspace_id: workspace.id });
     const token = createSession(newUser.id); await persist();
-    return json(res, 201, { user: publicUser(newUser), workspace }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
+    return json(res, 201, { user: publicUser(newUser), workspace: publicWorkspace(workspace) }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
   }
   if (pathname === '/api/auth/login' && method === 'POST') {
     const mail = email(body.email), password = String(body.password || '');
     const found = db.users.find(u => u.email === mail);
     if (!found || found.status === 'disabled' || !verifyPassword(password, found.password_hash)) return error(res, 401, '邮箱或密码不正确', 'invalid_credentials');
     const token = createSession(found.id); addAudit(found, 'login', 'user', found.id, {}); await persist();
-    return json(res, 200, { user: publicUser(found), workspace: activeWorkspace(found) }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
+    return json(res, 200, { user: publicUser(found), workspace: publicWorkspace(activeWorkspace(found)) }, { 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) });
   }
   if (pathname === '/api/auth/logout' && method === 'POST') {
     const token = cookieToken(req); if (token) delete db.sessions[token]; if (user) addAudit(user, 'logout', 'user', user.id, {}); await persist();
@@ -514,7 +560,7 @@ async function api(req, res, pathname, method, body, user) {
   }
   if (pathname === '/api/auth/me' && method === 'GET') {
     if (!user) return error(res, 401, '未登录', 'unauthorized');
-    return json(res, 200, { user: publicUser(user), workspace: activeWorkspace(user) });
+    return json(res, 200, { user: publicUser(user), workspace: publicWorkspace(activeWorkspace(user)) });
   }
   if (!user) return error(res, 401, '请先登录', 'unauthorized');
 
@@ -569,7 +615,7 @@ async function api(req, res, pathname, method, body, user) {
     return error(res, 405, '不支持的请求方法', 'method_not_allowed');
   }
 
-  if (pathname === '/api/workspace' && method === 'GET') return json(res, 200, { workspace: activeWorkspace(user) });
+  if (pathname === '/api/workspace' && method === 'GET') return json(res, 200, { workspace: publicWorkspace(activeWorkspace(user)) });
   if (pathname === '/api/workspace' && method === 'PATCH') {
     if (!roleIsPI(user)) return error(res, 403, '只有 PI 可以修改课题组设置', 'forbidden');
     const workspace = activeWorkspace(user);
@@ -582,13 +628,13 @@ async function api(req, res, pathname, method, body, user) {
     if (body.timezone !== undefined) updates.timezone = safeText(body.timezone, 80) || workspace.timezone;
     Object.assign(workspace, updates);
     addAudit(user, 'update', 'workspace', workspace.id, { fields: Object.keys(body) }); await persist();
-    return json(res, 200, { workspace });
+    return json(res, 200, { workspace: publicWorkspace(workspace) });
   }
   if (pathname === '/api/workspace/join-code/rotate' && method === 'POST') {
     if (!roleIsPI(user)) return error(res, 403, '只有 PI 可以更新邀请码', 'forbidden');
     const workspace = activeWorkspace(user); workspace.join_code = joinCode();
     addAudit(user, 'rotate_join_code', 'workspace', workspace.id, {}); await persist();
-    return json(res, 200, { workspace });
+    return json(res, 200, { workspace: publicWorkspace(workspace) });
   }
 
   if (pathname === '/api/bootstrap' && method === 'GET') {
@@ -597,7 +643,7 @@ async function api(req, res, pathname, method, body, user) {
     data.members = db.users.filter(u => u.workspace_id === workspace.id).map(publicUser);
     for (const c of ['projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'reviews', 'daily_logs', 'weekly_reports']) data[c] = workspaceRows(c, user).filter(row => canReadRow(user, c, row)).map(row => publicRow(c, row));
     data.logs = data.daily_logs;
-    return json(res, 200, { currentUser: publicUser(user), workspace, data, settings: { ai: publicAIConfig() }, permissions: { isPI: roleIsPI(user) } });
+    return json(res, 200, { currentUser: publicUser(user), workspace: publicWorkspace(workspace), data, settings: { ai: publicAIConfig() }, permissions: { isPI: roleIsPI(user) } });
   }
   if (pathname === '/api/members' && method === 'GET') return json(res, 200, { members: db.users.filter(u => u.workspace_id === activeWorkspace(user).id).map(publicUser) });
   if (parts[0] === 'api' && parts[1] === 'members' && parts[2] && method === 'PATCH') {
@@ -711,38 +757,87 @@ async function api(req, res, pathname, method, body, user) {
 function mime(file) {
   return { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' }[path.extname(file).toLowerCase()] || 'application/octet-stream';
 }
-async function favicon(req, res) {
-  const workspace = workspaceForUser(userFromRequest(req));
-  let image;
-  if (workspace && workspace.school_id === 'custom') image = decodeSchoolLogo(workspace.school_logo);
-  if (workspace && workspace.school_id && workspace.school_id !== 'custom') {
-    const school = schools.find(workspace.school_id);
-    if (school && SCHOOL_LOGO_PATHS.has(school.logo)) {
-      try { image = { data: await fsp.readFile(path.join(ROOT, school.logo)), type: 'image/png' }; } catch (_) {}
-    }
-  }
-  if (!image) image = { data: await fsp.readFile(path.join(ROOT, 'favicon.svg')), type: 'image/svg+xml' };
+function sendImage(req, res, image) {
   res.writeHead(200, {
     'Content-Type': image.type, 'Content-Length': image.data.length,
     'Cache-Control': 'private, no-store', Vary: 'Cookie', 'X-Content-Type-Options': 'nosniff'
   });
   return res.end(req.method === 'HEAD' ? undefined : image.data);
 }
-async function staticFile(res, pathname) {
+async function favicon(req, res, ico) {
+  const workspace = workspaceForUser(userFromRequest(req));
+  let image;
+  if (workspace && workspace.school_id === 'custom') {
+    const custom = decodeSchoolLogo(workspace.school_logo);
+    if (custom && custom.type === 'image/png') {
+      const data = ico ? pngIco(custom.data) : custom.data;
+      if (data) image = { data, type: ico ? 'image/x-icon' : 'image/png' };
+    }
+  } else if (workspace) {
+    const school = schools.find(workspace.school_id);
+    if (school && SCHOOL_LOGO_PATHS.has(school.logo)) {
+      const file = ico ? school.logo.replace(/\.png$/, '.ico') : school.logo;
+      try { image = { data: await fsp.readFile(path.join(ROOT, file)), type: ico ? 'image/x-icon' : 'image/png' }; } catch (_) {}
+    }
+  }
+  if (!image) image = { data: await fsp.readFile(path.join(ROOT, ico ? 'favicon.ico' : 'favicon.png')), type: ico ? 'image/x-icon' : 'image/png' };
+  return sendImage(req, res, image);
+}
+function schoolIcon(req, res, pathname) {
+  const match = pathname.match(/^\/school-icons\/([a-f0-9]{64})\.(png|jpg|webp|ico)$/);
+  if (!match) return error(res, 404, '文件不存在', 'not_found');
+  const token = Buffer.from(match[1], 'hex');
+  const workspace = db.workspaces.find(current => current.school_id === 'custom' && typeof current.school_logo === 'string' && current.school_logo &&
+    crypto.timingSafeEqual(token, Buffer.from(schoolIconToken(current), 'hex')));
+  const image = workspace && decodeSchoolLogo(workspace.school_logo);
+  if (!image) return error(res, 404, '文件不存在', 'not_found');
+  if (match[2] === 'ico') {
+    const data = image.type === 'image/png' && pngIco(image.data);
+    return data ? sendImage(req, res, { data, type: 'image/x-icon' }) : error(res, 404, '文件不存在', 'not_found');
+  }
+  const extension = image.type === 'image/jpeg' ? 'jpg' : image.type.slice(6);
+  return match[2] === extension ? sendImage(req, res, image) : error(res, 404, '文件不存在', 'not_found');
+}
+async function indexHtml(req, res) {
+  const icons = schoolIcons(workspaceForUser(userFromRequest(req)));
+  const links = [
+    `<link id="app-favicon" rel="icon" href="${icons.raster}" type="${icons.type}">`,
+    icons.ico ? `<link id="app-favicon-ico" rel="icon" href="${icons.ico}" type="image/x-icon">` : '',
+    `<link id="app-apple-icon" rel="apple-touch-icon" href="${icons.raster}">`
+  ].filter(Boolean).join('\n');
+  const template = await fsp.readFile(path.join(ROOT, 'index.html'), 'utf8');
+  const cleaned = template.replace(/<link\b[^>]*\bid=["'](?:app-favicon|app-favicon-ico|app-apple-icon)["'][^>]*>\s*/gi, '');
+  const html = cleaned.replace(/<head\b[^>]*>/i, tag => tag + '\n' + links);
+  const data = Buffer.from(html, 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8', 'Content-Length': data.length,
+    'Cache-Control': 'private, no-store', Vary: 'Cookie', 'X-Content-Type-Options': 'nosniff'
+  });
+  return res.end(req.method === 'HEAD' ? undefined : data);
+}
+async function staticFile(req, res, pathname) {
   const clean = pathname === '/' ? '/index.html' : pathname;
   const file = path.resolve(ROOT, '.' + clean);
   const relative = path.relative(ROOT, file);
   const parts = relative.split(path.sep);
   const publicFile = ['index.html', 'styles.css', 'favicon.svg', 'sw.js'].includes(relative) ||
     SCHOOL_LOGO_PATHS.has('/' + relative.split(path.sep).join('/')) ||
+    SCHOOL_ICO_PATHS.has('/' + relative.split(path.sep).join('/')) ||
     (parts.length === 2 && parts[0] === 'js' && path.extname(relative).toLowerCase() === '.js' && !parts.some(part => part.startsWith('.')));
   if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || !publicFile) return error(res, 404, '文件不存在', 'not_found');
-  try { const stat = await fsp.stat(file); if (!stat.isFile()) throw new Error('not_file'); res.writeHead(200, { 'Content-Type': mime(file), 'Cache-Control': 'no-cache' }); fs.createReadStream(file).pipe(res); }
+  if (relative === 'index.html') return indexHtml(req, res);
+  try {
+    const stat = await fsp.stat(file); if (!stat.isFile()) throw new Error('not_file');
+    res.writeHead(200, { 'Content-Type': mime(file), 'Content-Length': stat.size, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(file).pipe(res);
+  }
   catch (_) { error(res, 404, '文件不存在', 'not_found'); }
 }
 
 async function main() {
   await ensureDb();
+  await ensureSchoolIconKey();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -752,8 +847,10 @@ async function main() {
         return await api(req, res, url.pathname, req.method, body, userFromRequest(req));
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return error(res, 405, '不支持的请求方法', 'method_not_allowed');
-      if (url.pathname === '/favicon.ico') return await favicon(req, res);
-      return staticFile(res, decodeURIComponent(url.pathname));
+      if (url.pathname === '/favicon.ico') return await favicon(req, res, true);
+      if (['/favicon.png', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'].includes(url.pathname)) return await favicon(req, res, false);
+      if (url.pathname.startsWith('/school-icons/')) return schoolIcon(req, res, url.pathname);
+      return staticFile(req, res, decodeURIComponent(url.pathname));
     } catch (err) { console.error(err); error(res, err.status || 500, err.message || '服务器错误', 'server_error'); }
   });
   server.listen(PORT, HOST, () => console.log(`Lab Workbench listening on http://${HOST}:${PORT}`));

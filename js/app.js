@@ -1506,8 +1506,14 @@
       let school;
       try { school = Branding.readPicker(document.getElementById('view')); }
       catch (err) { toast(err.message, 'error'); return; }
+      const previousSchool = JSON.stringify(Branding.schoolFields(S.workspace()));
       el.disabled = true;
-      S.setWorkspace(Object.assign({ name: name }, school)).then(function () { toast('课题组信息已更新', 'success'); render(); }).catch(function (err) { el.disabled = false; toast('保存失败：' + err.message, 'error'); });
+      S.setWorkspace(Object.assign({ name: name }, school)).then(function (workspace) {
+        if (S.isOnline() && previousSchool !== JSON.stringify(Branding.schoolFields(workspace))) {
+          window.location.reload(); return;
+        }
+        toast('课题组信息已更新', 'success'); render();
+      }).catch(function (err) { el.disabled = false; toast('保存失败：' + err.message, 'error'); });
       return;
     }
     if (a === 'copy-join-code') {

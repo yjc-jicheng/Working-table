@@ -4,6 +4,7 @@
   const Schools = window.LabSchools;
   const CACHE_KEY = 'lab-workbench:school-branding:v1';
   const DEFAULT_LOGO = 'favicon.svg';
+  const ICON_VERSION = '?v=2';
   function assetSource(source) { return window.location.protocol === 'file:' && source.charAt(0) === '/' ? '.' + source : source; }
   function esc(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
@@ -12,11 +13,13 @@
   }
   function schoolFields(value) {
     const school = value || {}, preset = Schools.find(school.school_id);
-    if (preset) return { school_id: preset.id, school_name: preset.name, school_logo: preset.logo };
+    if (preset) return { school_id: preset.id, school_name: preset.name, school_logo: preset.logo, school_favicon: preset.logo + ICON_VERSION, school_favicon_ico: preset.logo.replace(/\.png$/, '.ico') + ICON_VERSION };
     if (school.school_id === 'custom') {
       return {
         school_id: 'custom', school_name: String(school.school_name || '').slice(0, 80),
-        school_logo: /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(school.school_logo || '') && school.school_logo.length <= 280000 ? school.school_logo : ''
+        school_logo: /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(school.school_logo || '') && school.school_logo.length <= 280000 ? school.school_logo : '',
+        school_favicon: /^\/school-icons\/[a-f0-9]{64}\.(?:png|jpg|webp)\?v=2$/.test(school.school_favicon || '') ? school.school_favicon : '',
+        school_favicon_ico: /^\/school-icons\/[a-f0-9]{64}\.ico\?v=2$/.test(school.school_favicon_ico || '') ? school.school_favicon_ico : ''
       };
     }
     return { school_id: '', school_name: '', school_logo: '' };
@@ -34,17 +37,28 @@
     if (!image || !image.classList || !image.classList.contains('school-crest') || image.dataset.fallback) return;
     image.dataset.fallback = 'true'; image.src = DEFAULT_LOGO;
     image.alt = '课题组标识';
-    if (image.closest('.brand-mark, .auth-mark')) setFavicon(DEFAULT_LOGO);
   }
   document.addEventListener('error', fallback, true);
-  function setFavicon(source) {
+  function iconLink(id, rel, source, type, sizes) {
+    const existing = document.getElementById(id);
+    if (!source) { if (existing) existing.remove(); return; }
     source = assetSource(source);
-    const link = document.getElementById('app-favicon');
-    if (!link || link.getAttribute('href') === source) return;
-    link.type = /\.svg(?:\?|$)/.test(source) ? 'image/svg+xml' : /^data:image\//.test(source) ? source.slice(5, source.indexOf(';')) : 'image/png';
-    link.href = source;
+    if (existing && existing.getAttribute('href') === source) return;
+    const link = document.createElement('link');
+    link.id = id; link.rel = rel; link.href = source;
+    if (type) link.type = type;
+    if (sizes) link.setAttribute('sizes', sizes);
+    if (existing) existing.replaceWith(link); else document.head.appendChild(link);
   }
-  function apply(value, persist) {
+  function setFavicon(value) {
+    const school = schoolFields(value), raster = school.school_favicon || 'favicon.png' + ICON_VERSION;
+    const ico = school.school_favicon ? school.school_favicon_ico : 'favicon.ico' + ICON_VERSION;
+    const type = /\.jpg\?/.test(raster) ? 'image/jpeg' : /\.webp\?/.test(raster) ? 'image/webp' : 'image/png';
+    iconLink('app-favicon-ico', 'icon', ico, 'image/x-icon', school.school_id === 'custom' ? '256x256' : '16x16 32x32 48x48 64x64');
+    iconLink('app-favicon', 'icon', raster, type, school.school_id === 'custom' ? '' : '256x256');
+    iconLink('app-apple-icon', 'apple-touch-icon', raster);
+  }
+  function apply(value, persist, updateIcon) {
     const school = schoolFields(value);
     document.querySelectorAll('.brand-mark, .auth-mark').forEach(function (mark) {
       const source = assetSource(school.school_logo || DEFAULT_LOGO), existing = mark.querySelector('img');
@@ -52,7 +66,7 @@
       mark.title = school.school_name || '课题组工作台';
       mark.classList.toggle('has-school', Boolean(school.school_logo));
     });
-    setFavicon(school.school_logo || DEFAULT_LOGO);
+    if (updateIcon !== false) setFavicon(school);
     if (persist) { try { localStorage.setItem(CACHE_KEY, JSON.stringify(school)); } catch (_) {} }
   }
   function pickerHTML(prefix, value, disabled) {
@@ -139,5 +153,6 @@
     });
   }
   window.LabBranding = { apply: apply, remembered: remembered, schoolFields: schoolFields, pickerHTML: pickerHTML, mount: mount, readPicker: readPicker };
-  apply(remembered(), false);
+  // Keep server-rendered icons authoritative while the authenticated workspace loads.
+  apply(remembered(), false, false);
 })();
