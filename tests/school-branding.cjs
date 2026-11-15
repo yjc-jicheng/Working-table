@@ -171,9 +171,20 @@ async function main() {
     assert.equal(registered.data.workspace.school_favicon_ico, first.logo.replace(/\.png$/, '.ico') + '?v=2');
   });
 
-  await check('initial HTML contains selected raster and true ICO URLs before JavaScript without exposing group metadata', async () => {
+  await check('root entry redirects to the canonical page with the query preserved for GET and HEAD', async () => {
+    for (const method of ['GET', 'HEAD']) {
+      for (const [route, expected] of [['/', '/index.html'], ['/?view=tasks&search=%E6%A0%A1%E5%BE%BD', '/index.html?view=tasks&search=%E6%A0%A1%E5%BE%BD']]) {
+        const redirected = status(await request(route, { method, cookie: piCookie }), 302);
+        assert.equal(redirected.headers.get('location'), expected);
+        assert.equal(redirected.headers.get('cache-control'), 'private, no-store');
+        assert.equal(redirected.bytes.length, 0);
+      }
+    }
+  });
+
+  await check('initial canonical HTML contains selected raster and true ICO URLs before JavaScript without exposing group metadata', async () => {
     const own = await workspace(piCookie);
-    for (const route of ['/', '/index.html']) {
+    for (const route of ['/index.html', '/index.html?view=tasks']) {
       const response = status(await request(route, { cookie: piCookie }), 200);
       assert.equal(response.headers.get('cache-control'), 'private, no-store');
       assert.equal(response.headers.get('vary'), 'Cookie');
@@ -192,7 +203,7 @@ async function main() {
       assert.equal(anonymousLinks['app-favicon-ico'].href, '/favicon.ico?v=2');
       assert(!anonymous.bytes.toString('utf8').includes(first.logo));
     }
-    const head = status(await request('/', { method: 'HEAD', cookie: piCookie }), 200);
+    const head = status(await request('/index.html', { method: 'HEAD', cookie: piCookie }), 200);
     assert.equal(head.bytes.length, 0);
     assert(Number(head.headers.get('content-length')) > 0);
   });
@@ -301,10 +312,10 @@ async function main() {
     const head = status(await request(stableCustomUrl, { method: 'HEAD' }), 200);
     assert.equal(head.bytes.length, 0);
     assert.equal(Number(head.headers.get('content-length')), png.length);
-    const links = faviconLinks(status(await request('/', { cookie: piCookie }), 200));
+    const links = faviconLinks(status(await request('/index.html', { cookie: piCookie }), 200));
     assert.equal(links['app-favicon'].href, stableCustomUrl);
     assert.equal(links['app-favicon-ico'].href, own.school_favicon_ico);
-    assert(!status(await request('/'), 200).bytes.toString('utf8').includes(stableCustomUrl));
+    assert(!status(await request('/index.html'), 200).bytes.toString('utf8').includes(stableCustomUrl));
     for (const route of [stableCustomUrl.replace('.png', '.jpg'), '/school-icons/' + '0'.repeat(64) + '.png', '/school-icons/' + own.id + '.png']) status(await request(route), 404);
     const endpoints = ['/api/auth/me', '/api/bootstrap', '/api/workspace'];
     for (const endpoint of endpoints) assert.equal(status(await request(endpoint, { cookie: piCookie }), 200).data.workspace.school_favicon, stableCustomUrl);
@@ -340,7 +351,7 @@ async function main() {
     const image = status(await request(updated.school_favicon), 200);
     assert.equal(image.headers.get('content-type'), 'image/webp');
     assert.deepEqual(image.bytes, webp);
-    const links = faviconLinks(status(await request('/', { cookie: piCookie }), 200));
+    const links = faviconLinks(status(await request('/index.html', { cookie: piCookie }), 200));
     assert.equal(links['app-favicon'].href, updated.school_favicon);
     assert.equal(links['app-favicon'].type, 'image/webp');
     assert.equal(links['app-favicon-ico'], undefined);

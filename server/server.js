@@ -847,6 +847,10 @@ async function main() {
         return await api(req, res, url.pathname, req.method, body, userFromRequest(req));
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return error(res, 405, '不支持的请求方法', 'method_not_allowed');
+      if (url.pathname === '/') {
+        res.writeHead(302, { Location: '/index.html' + url.search, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+        return res.end();
+      }
       if (url.pathname === '/favicon.ico') return await favicon(req, res, true);
       if (['/favicon.png', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'].includes(url.pathname)) return await favicon(req, res, false);
       if (url.pathname.startsWith('/school-icons/')) return schoolIcon(req, res, url.pathname);
