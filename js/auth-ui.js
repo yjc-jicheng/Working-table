@@ -7,8 +7,10 @@
   let busy = false;
   let workspaceMode = 'join';
   let showPassword = false;
+  const Branding = window.LabBranding;
   // 切换页签或提交失败会重绘表单，已填写的内容保存在这里，避免让用户重填。
   const values = {};
+  const schoolUploadState = {};
 
   function esc(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function v(name) { return esc(values[name] || ''); }
@@ -21,7 +23,7 @@
     const register = mode === 'register';
     root.classList.add('visible');
     root.innerHTML = '<div class="auth-shell">' +
-      '<section class="auth-aside"><div class="auth-brand"><div class="auth-mark">研</div><span>课题组工作台</span></div>' +
+      '<section class="auth-aside"><div class="auth-brand"><div class="auth-mark"></div><span>课题组工作台</span></div>' +
       '<h1>把课题组的每一天，<br>整理成看得见的进展。</h1>' +
       '<ul class="auth-features">' +
       feature('每日上报与 AI 摘要', '成员写下当天工作，AI 整理成日报与周报，确认后才回写进度。') +
@@ -40,17 +42,27 @@
       (register ? '<label>加入方式<select id="workspace-mode" name="workspace_mode"><option value="join" ' + (workspaceMode === 'join' ? 'selected' : '') + '>加入已有课题组</option><option value="create" ' + (workspaceMode === 'create' ? 'selected' : '') + '>创建新课题组（我是 PI）</option></select></label>' : '') +
       (register && workspaceMode === 'join' ? '<label>课题组邀请码<input name="join_code" required maxlength="40" autocomplete="off" placeholder="向 PI 获取 10 位邀请码" value="' + v('join_code') + '"></label>' : '') +
       (register && workspaceMode === 'create' ? '<label>课题组名称<input name="workspace_name" required maxlength="80" autocomplete="organization" placeholder="例如：智能感知与分子设计实验室" value="' + v('workspace_name') + '"></label>' : '') +
+      (register && workspaceMode === 'create' ? Branding.pickerHTML('auth', values, busy) : '') +
       (register ? '<label>角色 / 学术身份<select name="academic_role">' + ['博士生', '硕士生', '博士后', '研究助理', 'PI / 导师'].map(function (role) { return option('academic_role', role); }).join('') + '</select></label>' : '') +
       '<label>密码<span class="auth-password"><input name="password" type="' + (showPassword ? 'text' : 'password') + '" required minlength="8" autocomplete="' + (register ? 'new-password' : 'current-password') + '" placeholder="至少 8 位" value="' + v('password') + '">' +
       '<button type="button" class="auth-eye" data-auth-eye aria-label="' + (showPassword ? '隐藏密码' : '显示密码') + '">' + (showPassword ? '隐藏' : '显示') + '</button></span></label>' +
       '<button class="btn btn-primary auth-submit" type="submit" ' + (busy ? 'disabled' : '') + '>' + (busy ? '处理中…' : (register ? '创建账号并进入' : '登录工作台')) + '</button>' +
       (register ? '<div class="auth-hint">创建新组会自动成为 PI；加入已有组后，成员只能进入对应邀请码的课题组。</div>' : '<div class="auth-hint">账号数据保存在课题组服务器，浏览器不会保存密码。</div>') +
       '</form></section></div>';
+    Branding.apply(register && workspaceMode === 'create' ? values : Branding.remembered(), false);
+    Branding.mount(root, values, function (school) { Object.assign(values, school); Branding.apply(school, false); }, schoolUploadState);
   }
   root.addEventListener('click', function (event) {
-    if (event.target.closest('[data-auth-eye]')) { showPassword = !showPassword; render(); const box = root.querySelector('input[name="password"]'); if (box) box.focus(); return; }
+    if (event.target.closest('[data-auth-eye]')) {
+      showPassword = !showPassword;
+      const box = root.querySelector('input[name="password"]'), eye = root.querySelector('[data-auth-eye]');
+      if (box) { box.type = showPassword ? 'text' : 'password'; box.focus(); }
+      if (eye) { eye.textContent = showPassword ? '隐藏' : '显示'; eye.setAttribute('aria-label', showPassword ? '隐藏密码' : '显示密码'); }
+      return;
+    }
     const button = event.target.closest('[data-auth-mode]');
     if (!button || button.dataset.authMode === mode) return;
+    if (root.querySelector('[data-school-picker][data-busy="true"]')) return;
     mode = button.dataset.authMode; render();
   });
   root.addEventListener('input', function (event) {
@@ -59,6 +71,7 @@
   root.addEventListener('change', function (event) {
     if (event.target && event.target.name) values[event.target.name] = event.target.value;
     if (event.target && event.target.id === 'workspace-mode') {
+      if (root.querySelector('[data-school-picker][data-busy="true"]')) { event.target.value = workspaceMode; return; }
       workspaceMode = event.target.value === 'create' ? 'create' : 'join';
       render();
     }
@@ -68,6 +81,10 @@
     event.preventDefault(); if (busy) return;
     const form = new FormData(event.target); const payload = {};
     form.forEach(function (value, key) { payload[key] = value; values[key] = value; });
+    if (mode === 'register' && workspaceMode === 'create') {
+      try { Object.assign(payload, Branding.readPicker(root)); }
+      catch (err) { const alert = root.querySelector('[data-school-error]'); if (alert) { alert.textContent = err.message; alert.hidden = false; } return; }
+    }
     busy = true; render();
     const job = mode === 'login' ? window.LabStore.signIn(payload) : window.LabStore.register(payload);
     Promise.resolve(job).then(function () { window.location.reload(); }).catch(function (err) {

@@ -126,7 +126,7 @@ body.auth-mode .app { display: none; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 8px 16px; }
 .brand-mark {
   width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px;
-  background: var(--accent-solid); color: #fff;
+  background: #fff; color: var(--accent-solid); border: 1px solid var(--border);
   display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 600;
 }
 .brand-text { min-width: 0; }
@@ -629,6 +629,24 @@ button.cal-ev:hover { filter: brightness(.96); }
 :root[data-theme="dark"] .auth-aside { background: #263A80; }
 .auth-brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
 .auth-mark { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 10px; color: var(--accent-solid); background: #fff; font-weight: 700; font-size: 17px; }
+.school-crest { width: 100%; height: 100%; object-fit: contain; display: block; }
+.brand-mark, .auth-mark { overflow: hidden; }
+.brand-mark.has-school, .auth-mark.has-school { padding: 2px; }
+.school-picker { display: grid; gap: 12px; min-width: 0; }
+.school-picker .field { margin: 0; }
+.school-preview { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.school-preview-mark { flex: 0 0 52px; width: 52px; height: 52px; padding: 3px; border: 1px solid var(--border); border-radius: 12px; background: #fff; overflow: hidden; }
+.school-preview-text { min-width: 0; display: grid; gap: 3px; }
+.school-preview-text strong { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.school-preview-text span, .school-error { font-size: 12px; line-height: 1.5; color: var(--muted); }
+.school-custom { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.school-custom[hidden], .school-error[hidden] { display: none; }
+.school-picker [hidden] { display: none; }
+.school-upload { cursor: pointer; position: relative; }
+.school-upload:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.school-error { color: var(--red-ink); }
+.workspace-school { margin-top: 18px; }
+.auth-form .school-upload { display: inline-flex; font-weight: 500; }
 .auth-aside h1 { font-size: 26px; font-weight: 600; line-height: 1.45; margin: 44px 0 30px; letter-spacing: .3px; }
 .auth-features { list-style: none; margin: auto 0 0; padding: 0; display: grid; gap: 18px; }
 .auth-features li { display: flex; gap: 12px; }

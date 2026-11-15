@@ -4,6 +4,7 @@
   const S = window.LabStore;
   const Charts = window.LabCharts;
   const Theme = window.LabTheme;
+  const Branding = window.LabBranding;
   function boot() {
     if (S.isOnline() && !S.isAuthenticated()) {
       document.body.classList.add('auth-mode');
@@ -300,6 +301,7 @@
     const el = document.getElementById('brand-sub');
     const workspace = S.workspace();
     if (el) el.textContent = workspace && workspace.name ? workspace.name : (S.isOnline() ? '我的课题组' : '智能感知与分子设计实验室');
+    Branding.apply(workspace, true);
   }
   function renderTopbar() {
     const t = TITLES[state.view];
@@ -888,9 +890,10 @@
     const providers = ['国模', 'DeepSeek', '通义千问', '智谱', '自定义'];
     return '<div class="grid g2">' +
       '<div class="stack">' +
-      (S.isOnline() ? '<div class="card">' + sectionHead('课题组', '名称会显示在侧边栏和登录后的工作台') +
-        '<div class="form-grid"><label class="field full"><span>课题组名称</span><input type="text" id="ws-name" maxlength="80" value="' + esc(workspace.name || '') + '" ' + (manage ? '' : 'disabled') + '></label></div>' +
-        '<div class="form-actions">' + (manage ? '<span class="grow"></span><button type="button" class="btn btn-primary" data-action="save-workspace">保存名称</button>' : '<span class="small muted">仅 PI 可以修改课题组信息</span>') + '</div></div>' : '') +
+      '<div class="card">' + sectionHead('课题组', '名称与校徽对课题组全体成员生效') +
+        '<div class="form-grid"><label class="field full"><span>课题组名称</span><input type="text" id="ws-name" maxlength="80" value="' + esc(workspace.name || (S.isOnline() ? '' : '智能感知与分子设计实验室')) + '" ' + (manage ? '' : 'disabled') + '></label></div>' +
+        '<div class="workspace-school">' + Branding.pickerHTML('ws', workspace, !manage) + '</div>' +
+        '<div class="form-actions">' + (manage ? '<span class="grow"></span><button type="button" class="btn btn-primary" data-action="save-workspace">保存课题组信息</button>' : '<span class="small muted">仅 PI 可以修改课题组信息</span>') + '</div></div>' +
       '<div class="card">' + sectionHead('AI 服务', '配置用于整理日报和周报的模型接口') +
       '<div class="form-grid">' +
       '<label class="field"><span>服务商</span><select id="ai-provider" ' + (manage ? '' : 'disabled') + '>' + providers.concat(providers.indexOf(cfg.provider) < 0 && cfg.provider ? [cfg.provider] : []).map(function (p) {
@@ -1321,6 +1324,7 @@
     Charts.reset();
     renderBrand(); renderNav(); renderMemberSwitch(); renderTopbar();
     root.innerHTML = (VIEWS[state.view] || viewOverview)();
+    if (state.view === 'settings') Branding.mount(root, S.workspace());
     root.dataset.view = state.view;
     if (state.renderedView !== state.view) {
       root.classList.remove('view-enter'); void root.offsetWidth; root.classList.add('view-enter');
@@ -1499,7 +1503,11 @@
     if (a === 'save-workspace') {
       const name = val('ws-name').trim();
       if (name.length < 2) { toast('课题组名称至少需要 2 个字符', 'error'); return; }
-      S.setWorkspaceName(name).then(function () { toast('课题组名称已更新', 'success'); render(); }).catch(function (err) { toast('保存失败：' + err.message, 'error'); });
+      let school;
+      try { school = Branding.readPicker(document.getElementById('view')); }
+      catch (err) { toast(err.message, 'error'); return; }
+      el.disabled = true;
+      S.setWorkspace(Object.assign({ name: name }, school)).then(function () { toast('课题组信息已更新', 'success'); render(); }).catch(function (err) { el.disabled = false; toast('保存失败：' + err.message, 'error'); });
       return;
     }
     if (a === 'copy-join-code') {

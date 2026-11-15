@@ -1,1 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#2f54c8"/><text x="32" y="43" text-anchor="middle" font-size="32" font-family="sans-serif" fill="white">研</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#F4F6FA"/><g fill="none" stroke="#37548B" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 25 20-12 20 12zM16 49h32M12 54h40M20 30v14m12-14v14m12-14v14"/><path d="M32 9V5m0 0h10v6H32" stroke-width="2.5"/></g></svg>

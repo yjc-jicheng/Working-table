@@ -12,6 +12,7 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
+const schools = require('../js/schools.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(__dirname, 'data');
@@ -22,6 +23,8 @@ const HOST = process.env.HOST || '0.0.0.0';
 const SESSION_DAYS = Number(process.env.SESSION_DAYS || 30);
 const MAX_BODY = 1024 * 1024 * 2;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_SCHOOL_LOGO_BYTES = 200 * 1024;
+const SCHOOL_LOGO_PATHS = new Set(schools.list.map(school => school.logo).filter(logo => /^\/assets\/schools\/[a-z0-9_-]+\.png$/.test(logo)));
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const ENV_AI_BASE_URL = String(process.env.AI_BASE_URL || '').replace(/\/$/, '');
 const ENV_AI_API_KEY = String(process.env.AI_API_KEY || '');
@@ -83,6 +86,7 @@ function newWorkspace(name, ownerId) {
     id: id('ws'), name: safeText(name, 80) || '我的课题组', slug: slug(name),
     join_code: joinCode(), owner_id: ownerId || null,
     timezone: process.env.TIMEZONE || 'Asia/Shanghai', plan: 'free',
+    school_id: '', school_name: '', school_logo: '',
     subscription_status: 'active', created_at: now()
   };
 }
@@ -95,6 +99,33 @@ function workspaceByJoinCode(code) {
   return (db.workspaces || []).find(w => String(w.join_code || '').toUpperCase() === normalized) || null;
 }
 function activeWorkspace(user) { return workspaceForUser(user) || (db.workspaces || [])[0] || null; }
+function decodeSchoolLogo(value) {
+  if (typeof value !== 'string' || value.length > Math.ceil(MAX_SCHOOL_LOGO_BYTES / 3) * 4 + 40) return null;
+  const match = value.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match || match[2].length % 4 !== 0) return null;
+  const data = Buffer.from(match[2], 'base64');
+  if (!data.length || data.length > MAX_SCHOOL_LOGO_BYTES || data.toString('base64') !== match[2]) return null;
+  const valid = match[1] === 'png' ? data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) :
+    match[1] === 'jpeg' ? data.subarray(0, 3).equals(Buffer.from([255, 216, 255])) :
+      data.length >= 12 && data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP';
+  return valid ? { data, type: 'image/' + match[1] } : null;
+}
+function schoolSettings(body, current = {}) {
+  if (!['school_id', 'school_name', 'school_logo'].some(key => Object.prototype.hasOwnProperty.call(body, key))) return { fields: null };
+  if (body.school_id !== undefined && typeof body.school_id !== 'string') return { error: '请选择有效的学校' };
+  const schoolId = String(body.school_id === undefined ? current.school_id || '' : body.school_id).trim();
+  if (!schoolId) return { fields: { school_id: '', school_name: '', school_logo: '' } };
+  if (schoolId !== 'custom') {
+    const school = schools.find(schoolId);
+    return school && SCHOOL_LOGO_PATHS.has(school.logo) ? { fields: { school_id: school.id, school_name: school.name, school_logo: school.logo } } : { error: '请选择有效的学校' };
+  }
+  if (body.school_name !== undefined && typeof body.school_name !== 'string') return { error: '请填写学校名称' };
+  const name = String(body.school_name === undefined ? current.school_name || '' : body.school_name).trim();
+  if (name.length < 2 || name.length > 80) return { error: '学校名称需为 2–80 个字符' };
+  const logo = body.school_logo === undefined ? (current.school_id === 'custom' ? current.school_logo || '' : '') : body.school_logo;
+  if (logo !== '' && !decodeSchoolLogo(logo)) return { error: '校徽需为 200 KB 以内的 PNG、JPG 或 WebP 图片' };
+  return { fields: { school_id: 'custom', school_name: name, school_logo: logo } };
+}
 function publicUser(user) {
   if (!user) return null;
   return {
@@ -443,6 +474,8 @@ async function api(req, res, pathname, method, body, user) {
     if (createGroup) {
       const workspaceName = safeText(body.workspace_name || body.workspaceName, 80);
       if (workspaceName.length < 2) return error(res, 400, '课题组名称至少需要 2 个字符', 'invalid_workspace');
+      const school = schoolSettings(body);
+      if (school.error) return error(res, 400, school.error, 'invalid_school');
       // Reuse the empty compatibility workspace for the first PI so a ghost
       // default group is not left behind in a fresh installation.
       if (isFirstAccount && db.workspaces.length === 1 && db.workspaces[0].id === 'ws_default') {
@@ -450,6 +483,7 @@ async function api(req, res, pathname, method, body, user) {
       } else {
         workspace = newWorkspace(workspaceName); db.workspaces.push(workspace);
       }
+      Object.assign(workspace, school.fields || {});
     } else {
       workspace = workspaceByJoinCode(body.join_code || body.joinCode);
       if (!workspace) return error(res, 404, '邀请码无效，请向 PI 获取最新邀请码', 'invalid_join_code');
@@ -541,8 +575,12 @@ async function api(req, res, pathname, method, body, user) {
     const workspace = activeWorkspace(user);
     const name = safeText(body.name, 80);
     if (name && name.length < 2) return error(res, 400, '课题组名称至少需要 2 个字符', 'invalid_workspace');
-    if (name) { workspace.name = name; workspace.slug = slug(name); }
-    if (body.timezone !== undefined) workspace.timezone = safeText(body.timezone, 80) || workspace.timezone;
+    const school = schoolSettings(body, workspace);
+    if (school.error) return error(res, 400, school.error, 'invalid_school');
+    const updates = Object.assign({}, school.fields || {});
+    if (name) { updates.name = name; updates.slug = slug(name); }
+    if (body.timezone !== undefined) updates.timezone = safeText(body.timezone, 80) || workspace.timezone;
+    Object.assign(workspace, updates);
     addAudit(user, 'update', 'workspace', workspace.id, { fields: Object.keys(body) }); await persist();
     return json(res, 200, { workspace });
   }
@@ -673,12 +711,30 @@ async function api(req, res, pathname, method, body, user) {
 function mime(file) {
   return { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' }[path.extname(file).toLowerCase()] || 'application/octet-stream';
 }
+async function favicon(req, res) {
+  const workspace = workspaceForUser(userFromRequest(req));
+  let image;
+  if (workspace && workspace.school_id === 'custom') image = decodeSchoolLogo(workspace.school_logo);
+  if (workspace && workspace.school_id && workspace.school_id !== 'custom') {
+    const school = schools.find(workspace.school_id);
+    if (school && SCHOOL_LOGO_PATHS.has(school.logo)) {
+      try { image = { data: await fsp.readFile(path.join(ROOT, school.logo)), type: 'image/png' }; } catch (_) {}
+    }
+  }
+  if (!image) image = { data: await fsp.readFile(path.join(ROOT, 'favicon.svg')), type: 'image/svg+xml' };
+  res.writeHead(200, {
+    'Content-Type': image.type, 'Content-Length': image.data.length,
+    'Cache-Control': 'private, no-store', Vary: 'Cookie', 'X-Content-Type-Options': 'nosniff'
+  });
+  return res.end(req.method === 'HEAD' ? undefined : image.data);
+}
 async function staticFile(res, pathname) {
   const clean = pathname === '/' ? '/index.html' : pathname;
   const file = path.resolve(ROOT, '.' + clean);
   const relative = path.relative(ROOT, file);
   const parts = relative.split(path.sep);
   const publicFile = ['index.html', 'styles.css', 'favicon.svg', 'sw.js'].includes(relative) ||
+    SCHOOL_LOGO_PATHS.has('/' + relative.split(path.sep).join('/')) ||
     (parts.length === 2 && parts[0] === 'js' && path.extname(relative).toLowerCase() === '.js' && !parts.some(part => part.startsWith('.')));
   if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || !publicFile) return error(res, 404, '文件不存在', 'not_found');
   try { const stat = await fsp.stat(file); if (!stat.isFile()) throw new Error('not_file'); res.writeHead(200, { 'Content-Type': mime(file), 'Cache-Control': 'no-cache' }); fs.createReadStream(file).pipe(res); }
@@ -696,6 +752,7 @@ async function main() {
         return await api(req, res, url.pathname, req.method, body, userFromRequest(req));
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return error(res, 405, '不支持的请求方法', 'method_not_allowed');
+      if (url.pathname === '/favicon.ico') return await favicon(req, res);
       return staticFile(res, decodeURIComponent(url.pathname));
     } catch (err) { console.error(err); error(res, err.status || 500, err.message || '服务器错误', 'server_error'); }
   });

@@ -183,23 +183,24 @@ window.LabStore = (function () {
     return request('/api/settings/ai', { method: 'PATCH', body: safe }).then(function (out) { if (out.ai) Object.assign(state.aiConfig, out.ai); return state.aiConfig; });
   }
   function save() { if (!ONLINE) saveDemo(); }
-  async function setWorkspaceName(name) {
-    if (!ONLINE) { state.workspace = Object.assign({}, state.workspace, { name: name }); saveDemo(); return state.workspace; }
-    const out = await request('/api/workspace', { method: 'PATCH', body: { name: name } });
+  async function setWorkspace(patch) {
+    if (!ONLINE) { state.workspace = Object.assign({}, state.workspace, patch); saveDemo(); return state.workspace; }
+    const out = await request('/api/workspace', { method: 'PATCH', body: patch });
     if (out.workspace) state.workspace = out.workspace;
     return state.workspace;
   }
+  function setWorkspaceName(name) { return setWorkspace({ name: name }); }
   /* 备份：导出当前账号可见的全部业务数据；导入仅演示模式可用。 */
   function exportData() {
     const data = clone(state.data); delete data.logs;
-    return { app: 'lab-workbench', version: 1, exported_at: new Date().toISOString(), workspace: state.workspace ? { name: state.workspace.name } : null, data: data };
+    return { app: 'lab-workbench', version: 1, exported_at: new Date().toISOString(), workspace: state.workspace ? Object.assign({ name: state.workspace.name }, window.LabBranding.schoolFields(state.workspace)) : null, data: data };
   }
   function importData(payload) {
     if (ONLINE) throw new Error('联网工作台的数据由服务器管理，不支持在浏览器中导入');
     const data = payload && payload.data;
     if (!data || !Array.isArray(data.members) || !data.members.length) throw new Error('备份文件格式不正确');
     setData(clone(data));
-    if (payload.workspace && payload.workspace.name) state.workspace = { name: String(payload.workspace.name) };
+    if (payload.workspace && payload.workspace.name) state.workspace = Object.assign({ name: String(payload.workspace.name) }, window.LabBranding.schoolFields(payload.workspace));
     if (!currentUser()) state.currentUserId = state.data.members[0].id;
     saveDemo();
     return state;
@@ -246,6 +247,6 @@ window.LabStore = (function () {
     init, data, getState, adapter, isOnline, isAuthenticated, workspace, can, members, member, currentUser, switchUser,
     list, find, create, update, updateAsync, remove, removeAsync, aiMode, setAiMode, aiConfig, setAiConfig, reset, save,
     signIn, register, signOut, applyDailySummary, weeklySummary, createAsync, refresh, uploadAttachment, downloadAttachment, removeAttachment, saveNotificationSubscription, notificationPreferences, setNotificationPreferences,
-    request, onError, setWorkspaceName, exportData, importData
+    request, onError, setWorkspace, setWorkspaceName, exportData, importData
   };
 })();
