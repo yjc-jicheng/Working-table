@@ -6,13 +6,13 @@ window.LabStore = (function () {
   const KEY = 'lab-workbench:v1';
   const ONLINE = window.location.protocol !== 'file:' && !/[?&]demo=1(?:&|$)/.test(window.location.search);
   const API_BASE = window.LabConfig && window.LabConfig.apiBase ? window.LabConfig.apiBase.replace(/\/$/, '') : '';
-  const COLLECTIONS = ['members', 'projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'logs', 'daily_logs', 'weekly_reports', 'reviews'];
+  const COLLECTIONS = ['members', 'projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'logs', 'daily_logs', 'weekly_reports', 'reviews', 'protocols', 'nudges'];
   let state = null;
   let readyPromise = null;
   const errorListeners = [];
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
-  function emptyData() { return { members: [], projects: [], tasks: [], papers: [], events: [], analyses: [], experiments: [], logs: [], daily_logs: [], weekly_reports: [], reviews: [] }; }
+  function emptyData() { return { members: [], projects: [], tasks: [], papers: [], events: [], analyses: [], experiments: [], logs: [], daily_logs: [], weekly_reports: [], reviews: [], protocols: [], nudges: [] }; }
   /* 乐观写入失败时回滚本地状态，并通知界面给出提示。 */
   function onError(fn) { errorListeners.push(fn); }
   function reportError(err, context) {

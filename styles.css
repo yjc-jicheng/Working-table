@@ -670,7 +670,26 @@ button.cal-ev:hover { filter: brightness(.96); }
 .auth-error { margin-bottom: 14px; padding: 10px 12px; color: var(--red-ink); background: var(--red-soft); border-radius: 9px; font-size: 13px; }
 .auth-hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
-/* ---------- 8. 响应式 ---------- */
+/* ---------- 8. 协作模块 ---------- */
+.subhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
+.subhead h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.nudge-columns { align-items: start; }
+.nudge-columns > div { min-width: 0; }
+.nudge-card { margin-bottom: 12px; padding: 16px; }
+.nudge-card.nudge-open { border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); }
+.nudge-card h3 { margin: 8px 0 5px; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.nudge-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.nudge-contact { display: inline-flex; gap: 9px; }
+.nudge-contact a { color: var(--accent-solid); text-decoration: none; }
+.nudge-contact a:hover { text-decoration: underline; }
+.nudge-actions { margin-top: 12px; padding-top: 12px; }
+.protocol-card { min-height: 220px; }
+.protocol-card.is-archived { opacity: .72; }
+.protocol-card h3 { margin: 8px 0 5px; }
+.protocol-content { margin-top: 16px; padding: 13px 14px; min-height: 96px; white-space: pre-wrap; line-height: 1.75; font-size: 13px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; overflow-wrap: anywhere; }
+.protocol-foot { margin-top: 12px; }
+
+/* ---------- 9. 响应式 ---------- */
 @media (max-width: 1180px) {
   .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .board { display: flex; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x proximity; }

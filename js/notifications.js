@@ -60,6 +60,11 @@
       const overdue = window.LabStore.list('tasks').filter(function (t) { return t.status !== 'done' && t.due_date && new Date(t.due_date + 'T23:59:59') < now && (!me || t.assignee_id === me.id); });
       if (overdue.length) notify('有延期任务需要推进', overdue.slice(0, 3).map(function (t) { return t.title; }).join('；'), 'overdue-tasks-' + key);
     }
+    const nudges = window.LabStore.list('nudges').filter(function (n) { return n.recipient_id === me.id && n.status === 'open'; });
+    nudges.slice(0, 3).forEach(function (n) {
+      if (!mark('nudge-' + n.id + '-' + n.status)) return;
+      notify('收到新的催办', String(n.message || '有一条新的催办').slice(0, 100), 'nudge-' + n.id);
+    });
   }
   window.LabNotifications = { enable: enable, disable: disable, status: status, setPref: setPref, check: check, prefs: prefs, savePrefs: savePrefs, notify: notify };
   if ('serviceWorker' in navigator && window.location.protocol !== 'file:') navigator.serviceWorker.register('/sw.js').then(function (reg) { registration = reg; }).catch(function () {});

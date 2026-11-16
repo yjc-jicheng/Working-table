@@ -241,6 +241,10 @@
       { id: 'analyses', label: '数据分析', icon: 'chart' },
       { id: 'reviews', label: '可视化复盘', icon: 'pie' }
     ] },
+    { group: '协作', items: [
+      { id: 'nudges', label: '互相催办', icon: 'bell' },
+      { id: 'protocols', label: '课题组 Protocol', icon: 'file' }
+    ] },
     { group: '课题组', items: [
       { id: 'members', label: '成员与权限', icon: 'users' },
       { id: 'settings', label: '设置', icon: 'settings' }
@@ -252,6 +256,7 @@
     experiments: ['研究管理', '实验记录'],
     papers: ['研究管理', '文献管理'], calendar: ['研究管理', '科研日历'],
     analyses: ['数据与复盘', '数据分析'], reviews: ['数据与复盘', '可视化复盘'],
+    nudges: ['协作', '互相催办'], protocols: ['协作', '课题组 Protocol'],
     members: ['课题组', '成员与权限'], settings: ['课题组', '设置']
   };
   function viewFromHash() {
@@ -290,6 +295,7 @@
     if (id === 'experiments') return S.list('experiments').length;
     if (id === 'calendar') return S.list('events').filter(function (e) { return diffDays(e.date) >= 0 && diffDays(e.date) <= 7; }).length;
     if (id === 'daily') return S.list('logs').filter(function (l) { return l.date === today(); }).length;
+    if (id === 'nudges') { const me = AuthAdapter.current(); return S.list('nudges').filter(function (n) { return me && n.recipient_id === me.id && n.status === 'open'; }).length; }
     return null;
   }
   function renderNav() {
@@ -515,7 +521,7 @@
     return html;
   }
   function aiResultHtml(r) {
-    const source = r.source === 'ai' ? esc(r.model || 'AI 模型') : (r.source === 'demo' ? '本地演示生成器' : 'AI 暂不可用，已按规则整理');
+    const source = r.source === 'ai' ? esc(r.model || 'AI 模型') : (r.source === 'demo' ? '本地演示生成器' : (r.aiError ? 'AI 暂不可用：' + esc(String(r.aiError).slice(0, 80)) : 'AI 暂不可用，已按规则整理'));
     // 服务端只回写当前成员有权修改的项目和任务，其余建议在这里标出来，避免误以为已生效
     const locked = function (collection, id) { const row = S.find(collection, id); return Boolean(row) && !canEdit(collection, row); };
     const lockNote = '<span class="chip-lock">需负责人或 PI 更新</span>';
@@ -894,6 +900,57 @@
     return html;
   }
 
+  /* ---------- 视图：互相催办 ---------- */
+  function nudgeStatusText(status) {
+    return { open: '待处理', acknowledged: '已读', done: '已完成', dismissed: '已忽略' }[status] || status || '待处理';
+  }
+  function nudgeStatusBadge(status) {
+    const tone = { open: 'b-amber', acknowledged: 'b-blue', done: 'b-green', dismissed: 'b-gray' }[status] || 'b-gray';
+    return '<span class="badge ' + tone + '">' + nudgeStatusText(status) + '</span>';
+  }
+  function nudgeChannels(channels) {
+    return arr(channels).map(function (channel) { return { in_app: '电脑通知', email: '邮件待配置', sms: '短信待配置' }[channel] || channel; }).join(' · ');
+  }
+  function viewNudges() {
+    const me = AuthAdapter.current() || {};
+    const all = S.list('nudges').slice().sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+    const incoming = all.filter(function (n) { return n.recipient_id === me.id; });
+    const outgoing = all.filter(function (n) { return n.created_by === me.id; });
+    const card = function (n, received) {
+      const sender = member(n.created_by), recipient = member(n.recipient_id), task = n.task_id ? S.find('tasks', n.task_id) : null;
+      const contact = received ? sender : recipient;
+      const canReceive = received && n.status !== 'done' && n.status !== 'dismissed';
+      const canCancel = !received && n.status === 'open';
+      return '<article class="card nudge-card ' + (n.status === 'open' ? 'nudge-open' : '') + '" data-row-id="' + esc(n.id) + '">' +
+        '<div class="card-top"><div class="ct-main"><div class="badge-row">' + nudgeStatusBadge(n.status) + priorityBadge(n.priority) + (n.due_date ? '<span class="small muted">截止 ' + fmt(n.due_date) + '</span>' : '') + '</div>' +
+        '<h3>' + esc(n.message || '未填写内容') + '</h3><div class="small muted">' + (received ? '来自 ' + esc(sender.name) : '发给 ' + esc(recipient.name)) + ' · ' + fmt(n.created_at) + '</div></div>' +
+        (canCancel ? iconBtn('trash', '撤回催办', 'data-action="del" data-collection="nudges" data-id="' + esc(n.id) + '"', 'danger') : '') + '</div>' +
+        '<div class="nudge-meta">' + (n.project_id ? '<span>项目：' + esc(projectTitle(n.project_id)) + '</span>' : '') + (task ? '<span>任务：' + esc(task.title) + '</span>' : '') + (nudgeChannels(n.channels) ? '<span>' + esc(nudgeChannels(n.channels)) + '</span>' : '') +
+        (contact.email || contact.phone ? '<span class="nudge-contact">' + (contact.email ? '<a href="' + esc('mailto:' + contact.email) + '">发邮件</a>' : '') + (contact.phone ? '<a href="' + esc('sms:' + contact.phone) + '">发短信</a><a href="' + esc('tel:' + contact.phone) + '">打电话</a>' : '') + '</span>' : '') + '</div>' +
+        (canReceive ? '<div class="form-actions nudge-actions"><button type="button" class="btn btn-sm" data-action="nudge-status" data-id="' + esc(n.id) + '" data-status="acknowledged">标记已读</button><button type="button" class="btn btn-sm btn-primary" data-action="nudge-status" data-id="' + esc(n.id) + '" data-status="done">已处理</button><button type="button" class="btn btn-sm btn-ghost" data-action="nudge-status" data-id="' + esc(n.id) + '" data-status="dismissed">忽略</button></div>' : '') +
+        '</article>';
+    };
+    let html = sectionHead('互相催办', '成员之间可以针对任务或项目发起轻量提醒；电脑通知立即可用，邮件和短信需要配置对应服务商。', addBtn('nudges', '发起催办'));
+    html += '<div class="grid g2 nudge-columns"><div><div class="subhead"><h3>收到的催办</h3><span class="small muted">' + incoming.filter(function (n) { return n.status === 'open'; }).length + ' 条待处理</span></div>' +
+      (incoming.length ? incoming.map(function (n) { return card(n, true); }).join('') : '<div class="card">' + empty('暂时没有收到催办', 'bell') + '</div>') + '</div>';
+    html += '<div><div class="subhead"><h3>我发出的催办</h3><span class="small muted">' + outgoing.length + ' 条</span></div>' +
+      (outgoing.length ? outgoing.map(function (n) { return card(n, false); }).join('') : '<div class="card">' + empty('还没有发起催办', 'bell', addBtn('nudges', '发起催办')) + '</div>') + '</div></div>';
+    return html;
+  }
+
+  /* ---------- 视图：课题组 Protocol ---------- */
+  function viewProtocols() {
+    const all = S.list('protocols').slice().sort(function (a, b) { return (a.status === 'archived') - (b.status === 'archived') || String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
+    const manage = S.can('manage');
+    let html = sectionHead('课题组 Protocol', '把样本、数据、命名、汇报和安全要求写成组内共同遵守的操作规范。', manage ? addBtn('protocols', '新建 Protocol') : '');
+    if (!all.length) return html + '<div class="card">' + empty('还没有课题组 Protocol', 'file', manage ? addBtn('protocols', '新建 Protocol') : '请让 PI 发布第一份 Protocol') + '</div>';
+    return html + '<div class="grid g2 protocol-grid">' + all.map(function (p) {
+      const editable = manage, owner = member(p.owner_id || p.created_by);
+      return '<article class="card protocol-card ' + (p.status === 'archived' ? 'is-archived' : '') + '" data-row-id="' + esc(p.id) + '"><div class="card-top"><div class="ct-main"><div class="badge-row"><span class="badge ' + (p.status === 'archived' ? 'b-gray' : 'b-green') + '">' + (p.status === 'archived' ? '已归档' : '生效中') + '</span><span class="small muted">v' + esc(p.version || 1) + '</span></div><h3>' + esc(p.title) + '</h3><div class="small muted">' + esc(p.purpose || '未填写适用范围') + ' · 维护人 ' + esc(owner.name) + '</div></div>' + (editable ? rowActions('protocols', p) : '') + '</div>' +
+        '<div class="protocol-content">' + esc(p.content || '暂无正文') + '</div><div class="small muted protocol-foot">最近更新：' + fmt(p.updated_at || p.created_at) + '</div></article>';
+    }).join('') + '</div>';
+  }
+
   /* ---------- 视图：设置 ---------- */
   function viewSettings() {
     const cfg = S.aiConfig(), workspace = S.workspace() || {}, manage = S.can('manage');
@@ -910,7 +967,7 @@
         '<div class="form-grid"><label class="field full"><span>课题组名称</span><input type="text" id="ws-name" maxlength="80" value="' + esc(workspace.name || (S.isOnline() ? '' : '智能感知与分子设计实验室')) + '" ' + (manage ? '' : 'disabled') + '></label></div>' +
         '<div class="workspace-school">' + Branding.pickerHTML('ws', workspace, !manage) + '</div>' +
         '<div class="form-actions">' + (manage ? '<span class="grow"></span><button type="button" class="btn btn-primary" data-action="save-workspace">保存课题组信息</button>' : '<span class="small muted">仅 PI 可以修改课题组信息</span>') + '</div></div>' +
-      '<div class="card">' + sectionHead('AI 服务', '配置用于整理日报和周报的模型接口') +
+      '<div class="card">' + sectionHead('AI 服务', '配置用于整理日报和周报的模型接口', '<button type="button" class="btn btn-sm" data-action="test-ai">测试连接</button>') +
       '<div class="form-grid">' +
       '<label class="field"><span>服务商</span><select id="ai-provider" ' + (manage ? '' : 'disabled') + '>' + providers.concat(providers.indexOf(cfg.provider) < 0 && cfg.provider ? [cfg.provider] : []).map(function (p) {
         return '<option ' + (cfg.provider === p ? 'selected' : '') + '>' + esc(p) + '</option>';
@@ -919,7 +976,7 @@
       '<label class="field full"><span>API 地址</span><input type="text" id="ai-base" placeholder="https://api.example.com/v1" value="' + esc(cfg.baseUrl) + '" ' + (manage ? '' : 'disabled') + '></label>' +
       '<label class="field full"><span>请求路径</span><input type="text" id="ai-chat-path" value="' + esc(cfg.chatPath || '/chat/completions') + '" ' + (manage ? '' : 'disabled') + '><small class="field-hint">OpenAI 兼容接口通常为 /chat/completions</small></label>' +
       '</div>' +
-      '<div class="status-line">' + (S.isOnline() ? (cfg.configured ? '<span class="badge b-green">已配置</span>' : '<span class="badge b-amber">尚未配置完整</span>') + '<span class="small muted">API Key 由服务器管理员在 .env 中配置，不会通过网页传输。</span>' :
+      '<div class="status-line">' + (S.isOnline() ? (cfg.configured ? '<span class="badge b-green">已配置</span>' : '<span class="badge b-amber">尚未配置完整</span>') + '<span class="small muted">API Key 由服务器管理员在 .env 中配置，不会通过网页传输；模型响应较慢时会在 45 秒后提示并降级。</span>' :
         '<span class="badge b-gray">演示模式</span><span class="small muted">当前使用本地演示生成器，不会调用任何模型。</span>') + '</div>' +
       '<div class="form-actions">' + (manage ? '<span class="grow"></span><button type="button" class="btn btn-primary" data-action="save-ai-config">保存 AI 配置</button>' : '<span class="small muted">仅 PI 可以修改 AI 配置</span>') + '</div></div>' +
       '<div class="card">' + sectionHead('AI 整理流程', '由成员确认后再更新项目数据') +
@@ -1007,6 +1064,22 @@
       { k: 'period', l: '周期', t: 'text', req: true, def: function () { return '第 ' + isoWeek(new Date()) + ' 周'; } },
       { k: 'content', l: '复盘内容', t: 'textarea' }
     ] },
+    protocols: { title: '课题组 Protocol', fields: [
+      { k: 'title', l: 'Protocol 标题', t: 'text', req: true },
+      { k: 'purpose', l: '适用范围 / 目的', t: 'text', ph: '例如：所有细胞实验与样本命名' },
+      { k: 'status', l: '状态', t: 'select', o: ['active', 'archived'], labels: ['生效中', '已归档'], w: 'half', def: function () { return 'active'; } },
+      { k: 'version', l: '版本号', t: 'number', min: 1, max: 999, w: 'half', def: function () { return 1; } },
+      { k: 'content', l: '正文', t: 'textarea', req: true }
+    ] },
+    nudges: { title: '催办', fields: [
+      { k: 'recipient_id', l: '催办对象', t: 'member', req: true },
+      { k: 'project_id', l: '关联项目', t: 'project', w: 'half' },
+      { k: 'task_id', l: '关联任务', t: 'task', w: 'half' },
+      { k: 'due_date', l: '希望完成日期', t: 'date', w: 'half', def: function () { return shift(3); } },
+      { k: 'priority', l: '优先级', t: 'select', o: ['高', '中', '低'], w: 'half', def: function () { return '中'; } },
+      { k: 'channels', l: '通知方式', t: 'select', o: ['in_app', 'email', 'sms'], labels: ['仅电脑通知', '电脑通知 + 邮件（需配置）', '电脑通知 + 短信（需配置）'], def: function () { return 'in_app'; } },
+      { k: 'message', l: '催办内容', t: 'textarea', req: true }
+    ] },
     members: { title: '课题组成员', fields: [
       { k: 'name', l: '姓名', t: 'text', req: true },
       { k: 'role', l: '角色', t: 'text', w: 'half', ph: '例如：硕士生 · 一年级' },
@@ -1066,6 +1139,7 @@
       if (f.req && !v) { toast('请填写「' + f.l + '」', 'error'); el.focus(); return; }
       if (f.t === 'number') { v = Number(v) || 0; if (f.min != null) v = Math.max(f.min, v); if (f.max != null) v = Math.min(f.max, v); }
       if (f.k === 'tags') v = String(v).split(/[,，]/).map(function (x) { return x.trim(); }).filter(Boolean);
+      if (f.k === 'channels') v = [String(v || 'in_app')];
       obj[f.k] = v;
     }
     if (collection === 'projects' && !id) obj.milestones = [];
@@ -1073,6 +1147,7 @@
     if (collection === 'events' && !id) { obj.reminder = true; obj.done = false; }
     if (collection === 'analyses' && !id) obj.created_at = new Date().toISOString();
     if (collection === 'reviews' && !id) obj.created_at = new Date().toISOString();
+    if (collection === 'protocols' && !id) { obj.status = obj.status || 'active'; obj.version = Number(obj.version) || 1; }
     if (collection === 'members' && !id) { obj.color = paletteColor(); }
     if (collection === 'tasks' && id) {
       const prev = S.find('tasks', id);
@@ -1330,7 +1405,7 @@
   const VIEWS = {
     overview: viewOverview, daily: viewDaily, projects: viewProjects, tasks: viewTasks,
     experiments: viewExperiments, papers: viewPapers, calendar: viewCalendar, analyses: viewAnalyses, reviews: viewReviews,
-    members: viewMembers, settings: viewSettings
+    nudges: viewNudges, protocols: viewProtocols, members: viewMembers, settings: viewSettings
   };
   function render() {
     const root = document.getElementById('view');
@@ -1466,6 +1541,11 @@
       S.update('tasks', t.id, { status: next, completed_at: next === 'done' ? new Date().toISOString() : null });
       toast('已推进为「' + statusText(next) + '」', 'success'); render(); return;
     }
+    if (a === 'nudge-status') {
+      const id = el.dataset.id, status = el.dataset.status;
+      S.updateAsync('nudges', id, { status: status }).then(function () { toast('催办状态已更新', 'success'); render(); }).catch(function (err) { toast('更新失败：' + (err && err.message ? err.message : '请重试'), 'error'); });
+      return;
+    }
     if (a === 'task-clear') { state.taskQuery = ''; state.taskProject = ''; state.taskAssignee = ''; render(); return; }
     if (a === 'project-filter') { state.projectFilter = el.dataset.value; render(); return; }
     if (a === 'project-tasks') { state.taskQuery = ''; state.taskAssignee = ''; state.taskProject = el.dataset.id; setView('tasks'); return; }
@@ -1514,6 +1594,13 @@
       Promise.resolve(S.setAiConfig({ provider: val('ai-provider'), baseUrl: val('ai-base').trim(), chatPath: val('ai-chat-path').trim(), model: val('ai-model').trim() })).then(function () {
         toast('AI 配置已保存', 'success'); render();
       }).catch(function (err) { toast('设置保存失败：' + err.message, 'error'); });
+      return;
+    }
+    if (a === 'test-ai') {
+      el.disabled = true; el.textContent = '测试中…';
+      S.request('/api/ai/test', { method: 'POST', body: {} }).then(function (out) {
+        toast('AI 连接正常，响应约 ' + Math.round(Number(out.elapsed_ms || 0) / 1000) + ' 秒', 'success');
+      }).catch(function (err) { toast('AI 连接失败：' + (err && err.message ? err.message : '请检查服务器配置'), 'error'); }).finally(function () { el.disabled = false; el.textContent = '测试连接'; });
       return;
     }
     if (a === 'save-workspace') {

@@ -399,6 +399,29 @@ async function main() {
     status(await request('/api/tasks/' + taskId, { method: 'PATCH', cookie: otherCookie, body: { title: '不得修改外组任务' } }), 404);
   });
 
+  await check('protocols are PI-managed and workspace-scoped', async () => {
+    const denied = status(await request('/api/protocols', { method: 'POST', cookie: memberCookie, body: { title: '成员不得发布', content: 'x' } }), 403);
+    assert.equal(denied.data.error, 'forbidden');
+    const created = status(await request('/api/protocols', { method: 'POST', cookie: piCookie, body: { title: '样本命名 Protocol', purpose: '所有新样本', content: '日期-项目-编号', version: 1 } }), 201).data.item;
+    assert.equal(status(await request('/api/protocols', { cookie: memberCookie }), 200).data.items.some(row => row.id === created.id), true);
+    assert.equal(status(await request('/api/protocols', { cookie: otherCookie }), 200).data.items.some(row => row.id === created.id), false);
+    status(await request('/api/protocols/' + created.id, { method: 'PATCH', cookie: memberCookie, body: { content: '成员不得修改' } }), 403);
+    status(await request('/api/protocols/' + created.id, { method: 'PATCH', cookie: piCookie, body: { status: 'archived', version: 2 } }), 200);
+  });
+
+  await check('nudges can be sent and acknowledged within one workspace', async () => {
+    const member = status(await request('/api/auth/me', { cookie: memberCookie }), 200).data.user;
+    const nudge = status(await request('/api/nudges', { method: 'POST', cookie: piCookie, body: { recipient_id: member.id, task_id: taskId, message: '请在今天下班前补充任务结果', priority: '高', channels: ['in_app', 'email'] } }), 201).data.item;
+    assert.deepEqual(nudge.channels, ['in_app', 'email']);
+    assert.equal(nudge.delivery.email, 'not_configured');
+    assert.equal(status(await request('/api/nudges', { cookie: memberCookie }), 200).data.items.some(row => row.id === nudge.id), true);
+    assert.equal(status(await request('/api/nudges', { cookie: otherCookie }), 200).data.items.some(row => row.id === nudge.id), false);
+    status(await request('/api/nudges/' + nudge.id, { method: 'PATCH', cookie: memberCookie, body: { status: 'done', message: '不应修改正文' } }), 200);
+    const updated = status(await request('/api/nudges', { cookie: piCookie }), 200).data.items.find(row => row.id === nudge.id);
+    assert.equal(updated.status, 'done');
+    assert.equal(updated.message, '请在今天下班前补充任务结果');
+  });
+
   await check('legacy workspaces without school fields still preserve sessions and business records', async () => {
     await stop();
     const databaseFile = path.join(appRoot, 'server/data/lab-workbench.json');

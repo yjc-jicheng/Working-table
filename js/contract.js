@@ -149,6 +149,35 @@ window.LabContract = {
         { name: 'content', type: 'text', note: '' },
         { name: 'created_at', type: 'timestamptz', note: '' }
       ]
+    },
+    {
+      name: 'protocols',
+      comment: 'PI 维护、成员查看的课题组规范',
+      columns: [
+        { name: 'id', type: 'text', note: '' },
+        { name: 'title', type: 'text', note: '' },
+        { name: 'purpose', type: 'text', note: '适用范围' },
+        { name: 'content', type: 'text', note: '规范正文' },
+        { name: 'owner_id', type: 'text', note: '维护人' },
+        { name: 'status', type: 'text', note: 'active / archived' },
+        { name: 'version', type: 'int', note: '' }
+      ]
+    },
+    {
+      name: 'nudges',
+      comment: '组内互相催办与处理状态',
+      columns: [
+        { name: 'id', type: 'text', note: '' },
+        { name: 'created_by', type: 'text', note: '发起人' },
+        { name: 'recipient_id', type: 'text', note: '接收人' },
+        { name: 'task_id', type: 'text', note: '可选关联任务' },
+        { name: 'project_id', type: 'text', note: '可选关联项目' },
+        { name: 'message', type: 'text', note: '' },
+        { name: 'due_date', type: 'date', note: '' },
+        { name: 'priority', type: 'text', note: '高 / 中 / 低' },
+        { name: 'status', type: 'text', note: 'open / acknowledged / done / dismissed' },
+        { name: 'channels', type: 'jsonb', note: 'in_app / email / sms；邮件短信需配置服务商' }
+      ]
     }
   ],
 
@@ -168,6 +197,9 @@ window.LabContract = {
     { method: 'POST', path: '/api/ai/daily-summary', purpose: '每日上报 → 结构化进度汇总（服务端保管模型 Key）' },
     { method: 'POST', path: '/api/ai/daily-summary/apply', purpose: '确认后回写任务状态与项目进度，需幂等' },
     { method: 'POST', path: '/api/ai/weekly-summary', purpose: '最近 7 天日报 → 周报摘要、亮点、阻塞点与下周建议' },
+    { method: 'POST', path: '/api/ai/test', purpose: '测试服务端模型连通性，不返回模型密钥' },
+    { method: 'GET/POST/PATCH/DELETE', path: '/api/protocols', purpose: 'PI 维护、成员查看课题组 Protocol' },
+    { method: 'GET/POST/PATCH/DELETE', path: '/api/nudges', purpose: '组内互相催办；默认站内与浏览器通知，邮件短信预留适配器' },
     { method: 'GET/PATCH', path: '/api/settings/ai', purpose: 'PI 保存服务商、Base URL、请求路径和模型名；Key 只读服务器环境变量' },
     { method: 'GET/PATCH', path: '/api/notifications/preferences', purpose: '晚间日报、早间任务、延期任务提醒偏好' },
     { method: 'POST', path: '/api/notifications/subscriptions', purpose: '保存浏览器 Push Subscription，供后续 VAPID 推送' },

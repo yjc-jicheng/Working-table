@@ -33,10 +33,11 @@ const ENV_AI_API_KEY = String(process.env.AI_API_KEY || '');
 const ENV_AI_MODEL = process.env.AI_MODEL || '';
 const ENV_AI_PROVIDER = process.env.AI_PROVIDER || '国模';
 const ENV_AI_CHAT_PATH = process.env.AI_CHAT_PATH || '/chat/completions';
+const AI_TIMEOUT_MS = Math.max(5000, Math.min(120000, Number(process.env.AI_TIMEOUT_MS || 45000)));
 
 const COLLECTIONS = new Set([
   'projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'reviews',
-  'daily_logs', 'weekly_reports'
+  'daily_logs', 'weekly_reports', 'protocols', 'nudges'
 ]);
 const COLLECTION_ALIASES = { logs: 'daily_logs' };
 const ROLES = new Set(['pi', 'member']);
@@ -196,7 +197,7 @@ function defaultDb() {
     workspace,
     users: [],
     projects: [], tasks: [], papers: [], events: [], analyses: [], experiments: [],
-    daily_logs: [], weekly_reports: [], reviews: [],
+    daily_logs: [], weekly_reports: [], reviews: [], protocols: [], nudges: [],
     sessions: {}, notification_subscriptions: [], notification_preferences: [],
     audit_logs: [], settings: { ai: { provider: ENV_AI_PROVIDER, baseUrl: ENV_AI_BASE_URL, model: ENV_AI_MODEL, chatPath: ENV_AI_CHAT_PATH } }
   };
@@ -228,7 +229,7 @@ function normalizeDb() {
   db.workspaces = db.workspaces.map(w => Object.assign({}, blank.workspaces[0], w, { join_code: w.join_code || joinCode() }));
   db.workspace = db.workspaces[0];
   const fallbackWorkspaceId = db.workspaces[0].id;
-  for (const c of ['projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'daily_logs', 'weekly_reports', 'reviews']) {
+  for (const c of ['projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'daily_logs', 'weekly_reports', 'reviews', 'protocols', 'nudges']) {
     db[c] = Array.isArray(db[c]) ? db[c] : [];
     db[c].forEach(row => { row.workspace_id = row.workspace_id || fallbackWorkspaceId; });
   }
@@ -340,6 +341,7 @@ function workspaceRows(collection, user) {
   if (!workspace) return [];
   let rows = db[collection].filter(row => row.workspace_id === workspace.id);
   if (collection === 'daily_logs') rows = rows.filter(row => roleIsPI(user) || row.author_id === user.id);
+  if (collection === 'nudges') rows = rows.filter(row => roleIsPI(user) || row.created_by === user.id || row.recipient_id === user.id);
   return rows;
 }
 function canReadRow(user, collection, row) {
@@ -347,6 +349,7 @@ function canReadRow(user, collection, row) {
   if (collection === 'daily_logs') return row.author_id === user.id;
   if (collection === 'tasks') return row.assignee_id === user.id || row.created_by === user.id;
   if (collection === 'projects') return row.lead_id === user.id || row.created_by === user.id || true;
+  if (collection === 'nudges') return row.created_by === user.id || row.recipient_id === user.id;
   return true;
 }
 function canWriteRow(user, collection, row) {
@@ -354,6 +357,8 @@ function canWriteRow(user, collection, row) {
   if (collection === 'daily_logs') return !row || row.author_id === user.id;
   if (collection === 'tasks') return !row || row.assignee_id === user.id || row.created_by === user.id;
   if (collection === 'projects') return !row || row.lead_id === user.id || row.created_by === user.id;
+  if (collection === 'protocols') return roleIsPI(user);
+  if (collection === 'nudges') return roleIsPI(user) || !row || row.created_by === user.id || row.recipient_id === user.id;
   return !row || row.created_by === user.id;
 }
 // partial=true 用于 PATCH：只规范化请求里实际带上的字段，避免把未提交的字段重置为默认值。
@@ -369,7 +374,9 @@ function cleanItem(collection, body, user, partial) {
     experiments: ['title', 'date', 'project_id', 'task_id', 'category', 'hypothesis', 'materials', 'procedure', 'observations', 'results', 'conclusion', 'next_steps'],
     reviews: ['period', 'content'],
     daily_logs: ['date', 'project_id', 'content', 'hours', 'summary', 'applied'],
-    weekly_reports: ['period', 'content', 'summary']
+    weekly_reports: ['period', 'content', 'summary'],
+    protocols: ['title', 'purpose', 'content', 'owner_id', 'status', 'version'],
+    nudges: ['recipient_id', 'task_id', 'project_id', 'message', 'due_date', 'priority', 'status', 'channels']
   }[collection] || [];
   for (const key of allowed) if (body[key] !== undefined) out[key] = body[key];
   if (collection === 'experiments') {
@@ -392,6 +399,24 @@ function cleanItem(collection, body, user, partial) {
     if (!partial) out.author_id = user.id;
     if (given('hours')) out.hours = Math.max(0, Math.min(24, Number(out.hours || 0)));
     if (given('content')) out.content = safeText(out.content, 20000);
+  }
+  if (collection === 'protocols') {
+    if (given('title')) out.title = safeText(out.title, 160);
+    if (given('purpose')) out.purpose = safeText(out.purpose, 1000);
+    if (given('content')) out.content = safeText(out.content, 30000);
+    if (given('owner_id')) out.owner_id = safeText(out.owner_id, 100);
+    if (given('status')) out.status = ['active', 'archived'].includes(out.status) ? out.status : 'active';
+    if (given('version')) out.version = Math.max(1, Math.min(999, Number(out.version || 1)));
+  }
+  if (collection === 'nudges') {
+    if (given('recipient_id')) out.recipient_id = safeText(out.recipient_id, 100);
+    if (given('task_id')) out.task_id = safeText(out.task_id, 100);
+    if (given('project_id')) out.project_id = safeText(out.project_id, 100);
+    if (given('message')) out.message = safeText(out.message, 2000);
+    if (given('due_date')) out.due_date = safeText(out.due_date, 10);
+    if (given('priority')) out.priority = ['高', '中', '低'].includes(out.priority) ? out.priority : '中';
+    if (given('status')) out.status = ['open', 'acknowledged', 'done', 'dismissed'].includes(out.status) ? out.status : 'open';
+    if (given('channels')) out.channels = (Array.isArray(out.channels) ? out.channels : []).filter(x => ['in_app', 'email', 'sms'].includes(x)).slice(0, 3);
   }
   return out;
 }
@@ -434,10 +459,21 @@ async function aiChat(system, userPrompt) {
   const config = effectiveAIConfig();
   if (!config.baseUrl || !config.apiKey || !config.model) return null;
   const endpoint = config.baseUrl + (config.chatPath.startsWith('/') ? config.chatPath : '/' + config.chatPath);
-  const response = await fetch(endpoint, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-    body: JSON.stringify({ model: config.model, temperature: 0.2, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }] })
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST', signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({ model: config.model, temperature: 0.2, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }] })
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error(`AI 服务响应超时（${Math.round(AI_TIMEOUT_MS / 1000)} 秒），已切换为规则整理`);
+    throw new Error(`AI 服务连接失败：${err && err.message ? err.message : '网络错误'}`);
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) throw new Error(`AI 服务返回 ${response.status}`);
   const data = await response.json();
   return data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
@@ -646,7 +682,7 @@ async function api(req, res, pathname, method, body, user) {
     const workspace = activeWorkspace(user);
     const data = {};
     data.members = db.users.filter(u => u.workspace_id === workspace.id).map(publicUser);
-    for (const c of ['projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'reviews', 'daily_logs', 'weekly_reports']) data[c] = workspaceRows(c, user).filter(row => canReadRow(user, c, row)).map(row => publicRow(c, row));
+    for (const c of ['projects', 'tasks', 'papers', 'events', 'analyses', 'experiments', 'reviews', 'daily_logs', 'weekly_reports', 'protocols', 'nudges']) data[c] = workspaceRows(c, user).filter(row => canReadRow(user, c, row)).map(row => publicRow(c, row));
     data.logs = data.daily_logs;
     return json(res, 200, { currentUser: publicUser(user), workspace: publicWorkspace(workspace), data, settings: { ai: publicAIConfig() }, permissions: { isPI: roleIsPI(user) } });
   }
@@ -668,6 +704,16 @@ async function api(req, res, pathname, method, body, user) {
 
   if (pathname === '/api/ai/daily-summary' && method === 'POST') return json(res, 200, await summarizeDaily(body, user));
   if (pathname === '/api/ai/weekly-summary' && method === 'POST') return json(res, 200, await summarizeWeekly(user, body));
+  if (pathname === '/api/ai/test' && method === 'POST') {
+    const started = Date.now();
+    try {
+      const content = await aiChat('你是连接测试助手，只返回 JSON。', '回复 {"ok":true}');
+      if (!content) return json(res, 503, { ok: false, message: 'AI 服务未返回内容', code: 'ai_empty' });
+      return json(res, 200, { ok: true, source: 'ai', model: effectiveAIConfig().model, elapsed_ms: Date.now() - started });
+    } catch (err) {
+      return json(res, 502, { ok: false, message: err.message || 'AI 服务不可用', code: 'ai_unavailable', elapsed_ms: Date.now() - started });
+    }
+  }
   if (pathname === '/api/ai/daily-summary/apply' && method === 'POST') {
     const payload = body.payload || body; const result = body.result || {};
     const idem = safeText(body.idempotencyKey || '', 120);
@@ -721,6 +767,7 @@ async function api(req, res, pathname, method, body, user) {
     return json(res, 200, { items: rows.slice(0, limit).map(row => publicRow(collection, row)) });
   }
   if (method === 'POST' && parts.length === 2) {
+    if (collection === 'protocols' && !roleIsPI(user)) return error(res, 403, '只有 PI 可以发布或修改课题组 Protocol', 'forbidden');
     const item = cleanItem(collection, body, user); item.id = id(collection.slice(0, 3)); item.workspace_id = activeWorkspace(user).id; item.created_by = user.id; item.created_at = now();
     if (collection === 'experiments') {
       if (!item.title) return error(res, 400, '请填写实验记录名称', 'invalid_experiment');
@@ -731,6 +778,23 @@ async function api(req, res, pathname, method, body, user) {
     if (collection === 'projects' && !item.lead_id) item.lead_id = user.id;
     if (collection === 'tasks' && !item.assignee_id) item.assignee_id = user.id;
     if (collection === 'daily_logs') item.author_id = user.id;
+    if (collection === 'protocols') {
+      if (!item.title) return error(res, 400, '请填写 Protocol 标题', 'invalid_protocol');
+      item.owner_id = item.owner_id || user.id;
+      item.status = item.status || 'active';
+      item.version = Number(item.version || 1);
+    }
+    if (collection === 'nudges') {
+      const recipient = db.users.find(row => row.id === item.recipient_id && row.workspace_id === item.workspace_id && row.status !== 'disabled');
+      if (!recipient) return error(res, 400, '请选择同一课题组内的有效成员', 'invalid_recipient');
+      if (recipient.id === user.id) return error(res, 400, '催办对象不能是自己', 'invalid_recipient');
+      if (!item.message) return error(res, 400, '请填写催办内容', 'invalid_nudge');
+      if (item.task_id && !db.tasks.some(row => row.id === item.task_id && row.workspace_id === item.workspace_id)) return error(res, 400, '关联任务不存在', 'invalid_reference');
+      if (item.project_id && !db.projects.some(row => row.id === item.project_id && row.workspace_id === item.workspace_id)) return error(res, 400, '关联项目不存在', 'invalid_reference');
+      item.status = 'open';
+      item.channels = Array.from(new Set(['in_app'].concat(item.channels || [])));
+      item.delivery = { in_app: 'queued', email: item.channels.includes('email') ? 'not_configured' : 'off', sms: item.channels.includes('sms') ? 'not_configured' : 'off' };
+    }
     db[collection].unshift(item); addAudit(user, 'create', collection, item.id, {}); await persist(); return json(res, 201, { item: publicRow(collection, item) });
   }
   if ((method === 'PATCH' || method === 'PUT') && parts.length === 3) {
@@ -743,6 +807,16 @@ async function api(req, res, pathname, method, body, user) {
       if (!candidate.title) return error(res, 400, '请填写实验记录名称', 'invalid_experiment');
       const refError = experimentReferenceError(candidate, user);
       if (refError) return error(res, 400, refError, 'invalid_reference');
+    }
+    if (collection === 'protocols' && !roleIsPI(user)) return error(res, 403, '只有 PI 可以发布或修改课题组 Protocol', 'forbidden');
+    if (collection === 'nudges' && !roleIsPI(user) && item.recipient_id === user.id) {
+      const status = patch.status;
+      for (const key of Object.keys(patch)) if (key !== 'status') delete patch[key];
+      if (status === undefined) return error(res, 400, '只能更新收到的催办状态', 'invalid_nudge_update');
+    }
+    if (collection === 'nudges' && patch.recipient_id) {
+      const recipient = db.users.find(row => row.id === patch.recipient_id && row.workspace_id === item.workspace_id && row.status !== 'disabled');
+      if (!recipient) return error(res, 400, '请选择同一课题组内的有效成员', 'invalid_recipient');
     }
     Object.assign(item, patch, { updated_at: now() }); addAudit(user, 'update', collection, item.id, { fields: Object.keys(body) }); await persist(); return json(res, 200, { item: publicRow(collection, item) });
   }
